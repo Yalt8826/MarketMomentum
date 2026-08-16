@@ -259,7 +259,7 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
     bhavcopy_dir = cfg.raw_data_dir / "bhavcopy" / "extracted"
     bhavcopy_files = discover_bhavcopy_files(bhavcopy_dir)
     if limit_days is not None:
-        bhavcopy_files = bhavcopy_files[:limit_days]
+        bhavcopy_files = bhavcopy_files[-limit_days:]
         logger.info("Bounded run: using %d bhavcopy files", len(bhavcopy_files))
     logger.info("Found %d bhavcopy files to process", len(bhavcopy_files))
 

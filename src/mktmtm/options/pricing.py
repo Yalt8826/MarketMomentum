@@ -28,7 +28,7 @@ def black_scholes_greeks(
 
     Returns a dictionary of: delta, gamma, theta, vega, rho
     """
-    if T <= 0:
+    if T <= 0 or sigma <= 0:
         return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
 
     d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
@@ -96,7 +96,7 @@ def black_scholes_price(
     is_call : True for Call, False for Put
     q  : Continuous dividend yield (decimal)
     """
-    if T <= 0:
+    if T <= 0 or sigma <= 0:
         # No time => option = intrinsic value
         return max(0.0, S - K) if is_call else max(0.0, K - S)
 

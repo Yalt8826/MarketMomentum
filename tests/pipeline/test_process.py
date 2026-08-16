@@ -147,3 +147,22 @@ def test_pipeline_legacy_fixture_parses_without_error(pipeline_settings: Setting
     # Legacy file's symbols get no timestamps (no spot) but the run survives.
     assert result["historical"]["scripts"]["BANKNIFTY"]["timestamps"] == {}
     assert result["historical"]["scripts"]["FINNIFTY"]["timestamps"] == {}
+
+
+def test_pipeline_limit_days_takes_most_recent_files(pipeline_settings: Settings) -> None:
+    """``limit_days=1`` bounds the run to the most recent bhavcopy file.
+
+    Fixtures contain two files: ``fo01APR2021bhav.csv`` (2021-04-01, legacy
+    schema, no spot) and ``fo_bhav_20250812.csv`` (2025-08-12, UDiFF, NIFTY
+    spot present). A 1-day bounded run must pick the *newest* file, so the
+    NIFTY timestamp for 12-Aug-2025 must appear in the output. Regression
+    test for the smoke-run bug where ``--limit-days`` sliced the oldest
+    files instead of the most recent.
+    """
+    output = main(pipeline_settings, limit_days=1)
+
+    with output.open("r", encoding="utf-8") as fh:
+        result = json.load(fh)
+
+    timestamps = result["historical"]["scripts"]["NIFTY"]["timestamps"]
+    assert "12-Aug-2025" in timestamps, "limit_days=1 must process the most recent file"

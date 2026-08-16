@@ -62,6 +62,16 @@ def test_zero_time_price_is_intrinsic_value() -> None:
     assert black_scholes_price(100.0, 90.0, 0.0, 0.05, 0.2, is_call=False) == pytest.approx(0.0)
 
 
+def test_zero_sigma_greeks_and_price_do_not_divide_by_zero() -> None:
+    """sigma == 0 (IV bisection sentinel for at/below-intrinsic rows) must not crash."""
+    greeks = black_scholes_greeks(S=100.0, K=90.0, T=0.5, r=0.05, sigma=0.0)
+    assert greeks == {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+
+    # Zero-vol price degenerates to intrinsic value.
+    assert black_scholes_price(100.0, 90.0, 0.5, 0.05, 0.0, is_call=True) == pytest.approx(10.0)
+    assert black_scholes_price(100.0, 90.0, 0.5, 0.05, 0.0, is_call=False) == pytest.approx(0.0)
+
+
 def test_put_call_parity() -> None:
     """call - put == S - K*exp(-rT) (no dividends)."""
     S, K, T, r = 100.0, 105.0, 0.25, 0.04
