@@ -1,0 +1,36 @@
+{
+ "historical": {
+  "scripts": {
+   "NIFTY": {
+    "exchange": "NSE",
+    "segment": "Index",
+    "timestamps": {
+     "12-Aug-2025": {
+      "underlying_price": 24487.400390625
+     },
+     "13-Aug-2025": {
+      "underlying_price": 24619.349609375
+     },
+     "14-Aug-2025": {
+      "underlying_price": 24631.30078125
+     },
+     "18-Aug-2025": {
+      "underlying_price": 24876.94921875
+     },
+     "19-Aug-2025": {
+      "underlying_price": 24980.650390625
+     },
+     "20-Aug-2025": {
+      "underlying_price": 25050.55078125
+     },
+     "21-Aug-2025": {
+      "underlying_price": 25083.75
+     },
+     "22-Aug-2025": {
+      "underlying_price": 24870.099609375
+     }
+    }
+   }
+  }
+ }
+}
