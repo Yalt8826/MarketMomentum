@@ -238,11 +238,12 @@ def _build_chain_rows(
     return chain_rows
 
 
-def main(settings_: Settings | None = None) -> Path:
+def main(settings_: Settings | None = None, limit_days: int | None = None) -> Path:
     """Run the full processing engine and write ``processed_data.json``.
 
     Returns the output file path. All data/reference/output dirs come from
-    ``Settings`` (defaults to the module-level singleton).
+    ``Settings`` (defaults to the module-level singleton). Pass ``limit_days``
+    to bound the number of bhavcopy files processed (most recent first).
     """
     cfg = settings_ if settings_ is not None else settings
 
@@ -257,6 +258,9 @@ def main(settings_: Settings | None = None) -> Path:
     # 2) Bhavcopy files (sorted by trade date) ---------------------------- #
     bhavcopy_dir = cfg.raw_data_dir / "bhavcopy" / "extracted"
     bhavcopy_files = discover_bhavcopy_files(bhavcopy_dir)
+    if limit_days is not None:
+        bhavcopy_files = bhavcopy_files[:limit_days]
+        logger.info("Bounded run: using %d bhavcopy files", len(bhavcopy_files))
     logger.info("Found %d bhavcopy files to process", len(bhavcopy_files))
 
     # 3) Interest rates + earnings ---------------------------------------- #
