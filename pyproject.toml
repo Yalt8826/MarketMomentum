@@ -1,12 +1,12 @@
 [project]
 name = "mktmtm"
 version = "0.1.0"
-description = "Add your description here"
+description = "Market data, research, ranking, and model system"
 readme = "README.md"
 authors = [
     { name = "Yalt8826", email = "YASHAS040825@proton.me" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.141.1",
     "numpy>=2.5.2",
@@ -20,7 +20,9 @@ dependencies = [
 ]
 
 [project.scripts]
-mktmtm = "mktmtm:main"
+mktmtm = "mktmtm.cli:main"
+mktmtm-api = "mktmtm.api:main"
+mktmtm-ui = "mktmtm.frontend:main"
 
 [build-system]
 requires = ["uv_build>=0.11.31,<0.12.0"]
