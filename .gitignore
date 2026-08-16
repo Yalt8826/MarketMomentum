@@ -21,3 +21,6 @@ models/promoted/
 *.db
 
 .DS_Store
+
+.agents/
+.claude/

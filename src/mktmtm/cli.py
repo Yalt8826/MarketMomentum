@@ -1,5 +1,7 @@
 import typer
 
+from mktmtm.config.logging import configure_logging
+
 app = typer.Typer(
     name="mktmtm",
     help="MktMtm market research and ranking system.",
@@ -9,6 +11,7 @@ app = typer.Typer(
 @app.callback()
 def cli() -> None:
     """MktMtm market research and ranking system."""
+    configure_logging()
 
 
 @app.command()
