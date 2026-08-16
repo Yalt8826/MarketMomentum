@@ -42,3 +42,27 @@ dev = [
     "pytest-cov>=7.1.0",
     "ruff>=0.16.3",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+    "integration: requires a live PostgreSQL connection (deselect with '-m \"not integration\"')",
+]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/mktmtm"]
+exclude = [
+    "src/mktmtm/frontend_app.py",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

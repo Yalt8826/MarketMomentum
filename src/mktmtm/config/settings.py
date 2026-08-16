@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     raw_data_dir: Path = data_dir / "raw"
     processed_data_dir: Path = data_dir / "processed"
     serving_data_dir: Path = data_dir / "serving"
+    reference_data_dir: Path = data_dir / "reference"
 
     models_dir: Path = PROJECT_ROOT / "models"
     candidates_dir: Path = models_dir / "candidates"
@@ -28,6 +29,19 @@ class Settings(BaseSettings):
     api_port: int = 8000
 
     log_level: str = "INFO"
+
+    # PostgreSQL (read from PG_* env vars / .env; pg_dsn overrides host/port/user/password)
+    pg_dsn: str | None = None
+    pg_host: str = "localhost"
+    pg_port: int = 5432
+    pg_db: str = "mktmtm"
+    pg_user: str = "postgres"
+    pg_password: str = ""
+    pg_sslmode: str = "disable"
+
+    # Pipeline tuning
+    batch_size: int = 1000
+    max_workers: int = 4
 
 
 settings = Settings()
