@@ -61,6 +61,11 @@ exclude = [
     "src/mktmtm/frontend_app.py",
 ]
 
+[[tool.mypy.overrides]]
+# psycopg2 ships no type stubs; treat it as untyped (like other C-extension deps).
+module = ["psycopg2", "psycopg2.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
