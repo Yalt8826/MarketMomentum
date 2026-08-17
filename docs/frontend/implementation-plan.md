@@ -433,6 +433,19 @@ curl -s -o /dev/null -w "%{http_code}\n" http://athena:8501          # expect 20
 
 ---
 
+## Phase 6 — UI visual refresh ✅ SHIPPED (2026-08-17, commit fe9da70)
+
+Post-implementation polish, outside the original plan scope: modern dark "trading-terminal" look, **zero new dependencies**.
+
+- `.streamlit/config.toml` — dark theme (teal accent `#00D4AA`, bg `#0E1117`).
+- `src/mktmtm/ui/styles.py` — shared CSS + HTML builders (metric cards, status pills, hero, sections); Streamlit-free.
+- `src/mktmtm/ui/charts.py` — Altair chart builders (dark theme): yearly rows, PNL by month (green/red by sign), PNL histogram, leaderboard, skip-reasons donut, coverage heatmap.
+- `src/mktmtm/frontend_app.py` — pages rebuilt on style/chart modules; branded sidebar; live job pills; Arrow-safe jobs table; `width="stretch"` (post-`use_container_width` deprecation).
+- `tests/unit/test_ui_charts.py` — 13 new unit tests.
+- Verified: **129 passed**; Streamlit `AppTest` renders all 4 pages with no exceptions; live boot on athena → 200 via `http://athena:8501`.
+
+---
+
 ## Files touched (summary)
 
 - **Create:** `src/mktmtm/ui/{__init__,jobs,queries}.py`, `tests/unit/test_ui_jobs.py`, `tests/backtest/test_scope.py`, `tests/integration/test_ui_queries.py`
