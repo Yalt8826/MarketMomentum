@@ -12,6 +12,7 @@ __pycache__/
 data/raw/
 data/processed/
 data/serving/
+data/jobs/
 
 models/candidates/
 models/evaluation/

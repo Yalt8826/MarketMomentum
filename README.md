@@ -31,7 +31,8 @@ scripts. Python 3.12, managed with [uv](https://docs.astral.sh/uv/).
 src/mktmtm/
 ├── cli.py               # Typer CLI (status, fetch-bhavcopy, fetch-yahoo, process, etl, backtest)
 ├── api.py               # FastAPI app
-├── frontend.py          # Streamlit app
+├── frontend.py          # Streamlit launcher (tailnet bind; --host/--port)
+├── frontend_app.py      # Streamlit control panel (dashboard, pipeline, explorer, analytics)
 ├── config/              # pydantic Settings + logging
 ├── options/             # pure math: pricing, volatility, chain helpers
 ├── data/                # bhavcopy, yahoo, symbols catalog, rates, earnings
@@ -78,6 +79,26 @@ uv run mktmtm backtest                        # short-strangle backtest (4y × a
 
 All commands are thin wrappers over the corresponding `mktmtm.*` modules;
 see `uv run mktmtm --help`.
+
+## UI
+
+Streamlit control panel — pipeline job runner, data explorer, analytics.
+It runs on athena (jobs survive UI restarts; scope defaults match the CLI).
+
+```bash
+uv run mktmtm-ui                        # binds athena tailnet IP:8501 by default
+uv run mktmtm-ui --host 127.0.0.1       # local-only mode (SSH-tunnel access)
+```
+
+Access from any tailnet device:
+
+- `http://athena:8501` (magicDNS)
+- `http://100.82.96.116:8501` (athena's tailnet IP)
+
+> **Security note:** the app has no auth; it is reachable only by devices on
+> the tailnet (Tailscale ACLs). Do **NOT** bind `0.0.0.0` — that would expose
+> it on every interface. If local-only binding is preferred, SSH-tunnel access
+> is the fallback: `ssh -N -L 8501:localhost:8501 athena`.
 
 ## Configuration
 
