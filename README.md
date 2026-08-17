@@ -42,8 +42,10 @@ src/mktmtm/
 ```
 
 Design and reference material live under `docs/`:
-`docs/backtest/` (strategy design), `docs/reference/` (formula reference PDF),
-`docs/architecture/` (pipeline diagram).
+`docs/backtest/` (strategy design), `docs/database/` (database architecture
+report — full schema, JSONB shapes, data flow, operations),
+`docs/reference/` (formula reference PDF), `docs/architecture/` (pipeline
+diagram).
 
 ## Quickstart
 
