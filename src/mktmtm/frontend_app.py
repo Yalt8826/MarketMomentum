@@ -1,8 +1,10 @@
-"""MktMtm Streamlit control panel — dashboard and pipeline job runner.
+"""MktMtm Streamlit control panel.
 
-Phase 3: sidebar navigation with a live Dashboard (DB summary) and a
-Pipeline page that runs the CLI pipeline steps as background jobs
-(see ``mktmtm.ui.jobs``). Data Explorer and Analytics arrive in Phase 4.
+Sidebar navigation with four pages: Dashboard (DB summary), Pipeline
+(runs the CLI pipeline steps as background jobs, see ``mktmtm.ui.jobs``),
+Data Explorer (schema/samples/JSONB + SQL box) and Analytics (backtest
+P&L, leaderboard, skip reasons, coverage). DB reads go through
+``mktmtm.ui.queries``.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import streamlit as st
 from dateutil.relativedelta import relativedelta
 
 from mktmtm.config.settings import settings
+from mktmtm.ui import queries
 from mktmtm.ui.jobs import job_command, kill_job, list_jobs, prune, start_job, tail_log
 
 st.set_page_config(page_title="MktMtm", layout="wide", page_icon="📈")
@@ -52,6 +55,12 @@ def _clean_csv(text: str) -> str | None:
     """Normalise a comma-separated text input; ``None`` when empty."""
     parts = [p.strip() for p in text.split(",") if p.strip()]
     return ",".join(parts) if parts else None
+
+
+@st.cache_resource
+def _cached_conn() -> psycopg2.extensions.connection:
+    """One shared read connection for the Explorer/Analytics pages."""
+    return queries.connect()
 
 
 def dashboard_page() -> None:
@@ -188,12 +197,143 @@ def pipeline_page() -> None:
 
 def explorer_page() -> None:
     st.header("Data Explorer")
-    st.info("Coming in Phase 4.")
+    try:
+        conn = _cached_conn()
+    except Exception as exc:
+        st.error(f"DB not reachable: {exc}")
+        return
+
+    table = st.selectbox("Table", list(queries.BROWSE_TABLES))
+    info = queries.table_info(conn, table)
+    table_status = queries.db_status(conn).get(table, {})
+
+    st.subheader("Schema")
+    st.dataframe(pd.DataFrame(info))
+    st.metric("row count", f"{table_status.get('rows', 0):,}")
+
+    st.subheader("Sample rows")
+    st.dataframe(queries.sample_rows(conn, table, n=50))
+
+    jsonb_cols = [col["name"] for col in info if col["type"] == "jsonb"]
+    if jsonb_cols:
+        st.subheader("JSONB viewer")
+        json_col = st.selectbox("JSONB column", jsonb_cols, key="explorer-jsonb-col")
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT {json_col} FROM {table} "
+                    f"WHERE {json_col} IS NOT NULL LIMIT 1"
+                )
+                first = cur.fetchone()
+            st.json(first[0] if first else None)
+        except Exception as exc:
+            st.error(f"Could not load JSONB sample: {exc}")
+
+    st.subheader("SQL")
+    sql = st.text_area(
+        "SQL query (read-only)",
+        value="SELECT * FROM option_metrics LIMIT 10;",
+        height=120,
+        key="explorer-sql",
+    )
+    if st.button("Run", key="explorer-run-sql"):
+        try:
+            st.session_state["explorer_sql_result"] = queries.run_sql(conn, sql)
+            st.session_state["explorer_sql_error"] = None
+        except ValueError as exc:
+            st.session_state["explorer_sql_error"] = str(exc)
+            st.session_state["explorer_sql_result"] = None
+    if st.session_state.get("explorer_sql_error"):
+        st.error(st.session_state["explorer_sql_error"])
+    result = st.session_state.get("explorer_sql_result")
+    if result is not None:
+        st.dataframe(result)
+        st.download_button(
+            "Download CSV",
+            result.to_csv(index=False).encode("utf-8"),
+            file_name="query_result.csv",
+            mime="text/csv",
+        )
 
 
 def analytics_page() -> None:
     st.header("Analytics")
-    st.info("Coming in Phase 4.")
+    try:
+        conn = _cached_conn()
+    except Exception as exc:
+        st.error(f"DB not reachable: {exc}")
+        return
+
+    symbols = queries.run_sql(
+        conn, "SELECT DISTINCT symbol FROM backtest_results ORDER BY symbol"
+    )["symbol"].tolist()
+    if not symbols:
+        st.warning("backtest_results is empty — nothing to analyse.")
+        return
+    f1, f2 = st.columns([1, 3])
+    year_range = f1.slider("Years", 2022, 2026, (2022, 2026))
+    selected_symbols = f2.multiselect("Symbols", symbols, default=symbols)
+    years = range(year_range[0], year_range[1] + 1)
+
+    pnl = queries.run_sql(
+        conn,
+        "SELECT symbol, year, month, pnl_points FROM backtest_results "
+        "WHERE pnl_points IS NOT NULL",
+    )
+    pnl = pnl[pnl["year"].isin(years) & pnl["symbol"].isin(selected_symbols)]
+    if pnl.empty:
+        st.warning("No traded months match the current filters.")
+        return
+
+    st.subheader("PNL by year/month")
+    monthly = (
+        pnl.groupby(["year", "month"], as_index=False)["pnl_points"]
+        .mean()
+        .sort_values(["year", "month"])
+    )
+    monthly["ym"] = monthly.apply(
+        lambda r: f"{int(r['year'])}-{int(r['month']):02d}", axis=1
+    )
+    st.bar_chart(monthly.set_index("ym")["pnl_points"])
+
+    st.subheader("PNL distribution")
+    hist = pd.cut(pnl["pnl_points"], bins=20).value_counts().sort_index()
+    hist_df = hist.rename_axis("pnl_bin").reset_index(name="count")
+    hist_df["pnl_bin"] = hist_df["pnl_bin"].astype(str)
+    st.bar_chart(hist_df.set_index("pnl_bin"))
+
+    st.subheader("Symbol leaderboard")
+    top = queries.symbol_leaderboard(conn, limit=10)
+    top["total_pnl"] = top["total_pnl"].astype(float)
+    bottom = queries.run_sql(
+        conn,
+        "SELECT symbol, count(*) AS months, "
+        "round(sum(pnl_points)::numeric, 2) AS total_pnl "
+        "FROM backtest_results WHERE pnl_points IS NOT NULL "
+        "GROUP BY symbol ORDER BY total_pnl ASC LIMIT 10",
+    )
+    bottom["total_pnl"] = bottom["total_pnl"].astype(float)
+    st.caption("Top 10 symbols by cumulative P&L (all years)")
+    st.bar_chart(top.set_index("symbol")["total_pnl"])
+    l1, l2 = st.columns(2)
+    l1.markdown("**Top 10**")
+    l1.dataframe(top)
+    l2.markdown("**Bottom 10**")
+    l2.dataframe(bottom)
+
+    st.subheader("Skip reasons")
+    reasons = queries.skip_reasons(conn)
+    st.bar_chart(reasons.set_index("reason")["n"])
+    st.dataframe(reasons)
+
+    st.subheader("Coverage heatmap — option_metrics rows per year × month")
+    cov = queries.coverage_year_month(conn)
+    cov = cov[cov["year"].isin(years)]
+    if cov.empty:
+        st.caption("No coverage data in the selected year range.")
+    else:
+        heat = cov.pivot_table(index="year", columns="month", values="n")
+        st.dataframe(heat.style.background_gradient(cmap="viridis"))
 
 
 try:
