@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated
@@ -11,6 +12,15 @@ app = typer.Typer(
     name="mktmtm",
     help="MktMtm market research and ranking system.",
 )
+
+
+def _parse_csv[ListItem](
+    value: str | None, converter: Callable[[str], ListItem]
+) -> list[ListItem] | None:
+    """Split a comma-separated CLI value into items; None/empty keeps the full scope."""
+    if value is None or not value.strip():
+        return None
+    return [converter(item.strip()) for item in value.split(",") if item.strip()]
 
 
 @app.callback()
@@ -100,11 +110,37 @@ def etl() -> None:
 
 
 @app.command()
-def backtest() -> None:
+def backtest(
+    symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--symbols",
+            help="Comma-separated symbols to backtest (default: all catalog symbols).",
+        ),
+    ] = None,
+    years: Annotated[
+        str | None,
+        typer.Option(
+            "--years",
+            help="Comma-separated years, e.g. 2022,2023 (default: last 4 years, inclusive).",
+        ),
+    ] = None,
+    months: Annotated[
+        str | None,
+        typer.Option(
+            "--months",
+            help="Comma-separated months 1-12, e.g. 1,2 (default: all 12 months).",
+        ),
+    ] = None,
+) -> None:
     """Run the short-strangle backtester and persist results to PostgreSQL."""
     from mktmtm.backtest.strangle import run_backtest
 
-    processed = run_backtest()
+    processed = run_backtest(
+        symbols=_parse_csv(symbols, str),
+        years=_parse_csv(years, int),
+        months=_parse_csv(months, int),
+    )
     typer.echo(f"Backtest finished; processed {processed} symbol-months.")
 
 

@@ -54,6 +54,7 @@ __all__ = [
     "is_index",
     "load_symbols_info",
     "main",
+    "resolve_scope",
     "run_backtest",
     "run_backtest_month",
 ]
@@ -785,11 +786,48 @@ def run_backtest_month(
 
 # --- Entry points -----------------------------------------------------------
 
-def run_backtest(cfg: Settings | None = None) -> int:
-    """Run the full backtest scope and persist results to Postgres.
+def resolve_scope(
+    symbols: list[str] | None,
+    years: list[int] | None,
+    months: list[int] | None,
+    *,
+    all_symbols: list[str],
+    current_year: int | None = None,
+) -> tuple[list[str], list[int], list[int]]:
+    """Resolve the backtest run scope from optional overrides.
 
-    Run scope defaults to every catalog symbol × the last 4 years × all 12
-    months. Override the block below to narrow the scope for a smoke test.
+    ``None`` keeps the default: every catalog symbol × the last 4 years
+    (inclusive, ``[current_year - 4 .. current_year]``) × all 12 months.
+    Explicit lists are used as given, with years outside the supported range
+    (2010..current_year + 1) and months outside 1..12 filtered out.
+    """
+    if current_year is None:
+        current_year = datetime.now().year
+    symbols_to_run = list(all_symbols) if symbols is None else list(symbols)
+    years_to_run = (
+        list(range(current_year - 4, current_year + 1))
+        if years is None
+        else [y for y in years if 2010 <= y <= current_year + 1]
+    )
+    months_to_run = (
+        list(range(1, 13))
+        if months is None
+        else [m for m in months if 1 <= m <= 12]
+    )
+    return symbols_to_run, years_to_run, months_to_run
+
+
+def run_backtest(
+    cfg: Settings | None = None,
+    symbols: list[str] | None = None,
+    years: list[int] | None = None,
+    months: list[int] | None = None,
+) -> int:
+    """Run the backtest scope and persist results to Postgres.
+
+    Scope defaults to every catalog symbol × the last 4 years (inclusive) ×
+    all 12 months; ``symbols``/``years``/``months`` narrow it (see
+    :func:`resolve_scope`). Future/current months are always skipped.
 
     Returns the number of (symbol, year, month) tasks actually processed.
     """
@@ -799,19 +837,15 @@ def run_backtest(cfg: Settings | None = None) -> int:
         logger.error("No symbols loaded from catalog; aborting backtest.")
         return 0
 
-    # Define backtest period (last 4 years)
-    end_year = datetime.now().year
-    start_year = end_year - 4
-
-    # --- RUN SCOPE: edit here before running --- #
-    symbols_to_run = all_symbols                    # every symbol in the catalog
-    years_to_run = list(range(start_year, end_year + 1))
-    months_to_run = list(range(1, 13))              # all months
-    # For a quick smoke test, override above, e.g.:
-    # symbols_to_run = ["NIFTY"]
-    # years_to_run = [2023]
-    # months_to_run = [1, 2]
-    # --- END RUN SCOPE --- #
+    # Resolve run scope: defaults to every catalog symbol × the last 4 years
+    # (inclusive) × all 12 months; explicit values narrow the run.
+    symbols_to_run, years_to_run, months_to_run = resolve_scope(
+        symbols,
+        years,
+        months,
+        all_symbols=all_symbols,
+        current_year=datetime.now().year,
+    )
 
     processed_count = 0
     total_tasks = len(symbols_to_run) * len(years_to_run) * len(months_to_run)
