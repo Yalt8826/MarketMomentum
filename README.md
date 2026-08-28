@@ -60,15 +60,15 @@ cp .env.example .env       # then edit PG_* to point at your PostgreSQL
 uv run mktmtm status       # sanity check
 ```
 
-Pipeline order for a fresh run:
+Pipeline order for a fresh run (ML training path; `process` is optional — its JSON feeds only the legacy UI):
 
 ```bash
 uv run mktmtm fetch-bhavcopy                  # 5 years of NSE F&O bhavcopy → data/raw/bhavcopy/
 uv run mktmtm fetch-yahoo                     # daily closes for catalog symbols → data/raw/yahoo_finance/
-uv run mktmtm process                         # enrich → data/processed/processed_data.json
+uv run mktmtm preparse-bhavcopy               # build the parquet cache (speeds `etl` ~4x) — re-run after every fetch
 uv run mktmtm etl                             # threaded per-symbol ETL into PostgreSQL
 uv run mktmtm make-dataset                    # features + targets → ml_dataset (+ parquet)
-uv run mktmtm backtest                        # short-strangle backtest (4y × all symbols) → PG
+uv run mktmtm backtest                        # optional: short-strangle backtest → PG
 ```
 
 ## CLI
@@ -78,7 +78,8 @@ uv run mktmtm backtest                        # short-strangle backtest (4y × a
 | `mktmtm status`      | Show environment, data dirs and DB target                          |
 | `mktmtm fetch-bhavcopy` | Download + filter NSE F&O bhavcopy (`--start-date`, `--end-date`, `--max-workers`) |
 | `mktmtm fetch-yahoo` | Download daily closes from Yahoo (`--days`, `--output-dir`)        |
-| `mktmtm process`     | Run the processing engine (`--limit-days` for bounded smoke runs)  |
+| `mktmtm preparse-bhavcopy` | Build the parquet cache of all bhavcopy CSVs (speeds `etl` ~4x) — re-run after every `fetch-bhavcopy` |
+| `mktmtm process`     | Legacy enrichment → `processed_data.json` (JSON twin of `etl`; not needed for the ML pipeline; `--limit-days` for bounded runs) |
 | `mktmtm etl`         | Threaded per-symbol ETL into PostgreSQL                            |
 | `mktmtm make-dataset`| Build the ML matrix (features + targets) into `ml_dataset` (+ parquet export; `--limit-symbols`, `--limit-dates` for smoke runs) |
 | `mktmtm backtest`    | Short-strangle backtester (persists results to PostgreSQL)         |
