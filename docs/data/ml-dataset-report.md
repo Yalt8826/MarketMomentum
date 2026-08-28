@@ -16,11 +16,18 @@ The current extract is a **one-month pilot (3,783 rows, 21 trading days)** and a
 
 The single most important consequence of going to 2,500 days: **two of the three defects below get harder to detect, not easier.** At 21 days they are obvious. At 2,500 days they hide in the tails and in the pre/post-2025 regime boundary, and they will quietly corrupt results you would otherwise trust.
 
-| # | Defect | Impact today | Impact at 2,500 days |
-|---|---|---|---|
-| 1 | Look-ahead leak in `ret_Nd` (§2) | Fatal, obvious (AUC 1.000) | **Fatal, and non-deterministic** — heap order may scramble differently |
-| 2 | Unadjusted prices / corporate actions (§3) | 2 bad rows, negligible | **Corrupts the label itself**; ~80–90 affected rows expected |
-| 3 | Reference feeds frozen mid-2025 (§4) | 2 dead columns — drop them | **Regime-shift trap** — populated in train, dead in live |
+| # | Defect | Impact today | Impact at 2,500 days | Status |
+|---|---|---|---|---|
+| 1 | Look-ahead leak in `ret_Nd` (§2) | Fatal, obvious (AUC 1.000) | **Fatal, and non-deterministic** — heap order may scramble differently | **fixed** |
+| 2 | Unadjusted prices / corporate actions (§3) | 2 bad rows, negligible | **Corrupts the label itself**; ~80–90 affected rows expected | **fixed** |
+| 3 | Reference feeds frozen mid-2025 (§4) | 2 dead columns — drop them | **Regime-shift trap** — populated in train, dead in live | surfaced; needs data refresh |
+
+> **Code status (2026-08-28):** defects 1 and 2 are fixed in `src/mktmtm/ml/dataset.py`
+> and `src/mktmtm/data/yahoo.py`, with regression tests and a build-time guard that
+> raises rather than writing a corrupt table. Defect 3 now logs loudly instead of
+> failing silently, but the real remedy is refreshing `ADJUSTED_MIFOR.csv`.
+> **The `ml_dataset` table in Postgres has not been regenerated** — it still holds
+> the corrupt build. Rebuild it before use.
 
 Once the leak is removed, there *is* a small but statistically real signal (walk-forward AUC ≈ **0.56–0.58**, positive in 9–10 of 10 folds). That is a reason to continue, not a result.
 
@@ -361,11 +368,11 @@ shuffled-label control:     AUC=0.502 ± 0.013   (t = +0.15)   ← harness is so
 ### Sequence
 
 **Before the download — blocking:**
-1. **Fix the leak** (§2). Sort by `(symbol, date)` before `_add_derived`; add `ORDER BY symbol, date` to both SQL statements; add a permanent build-time assertion on `ret_1d`. *Non-negotiable: at 2,500 days this bug produces a plausible-looking AUC instead of an obvious one.*
-2. **Use `adjclose` in `yahoo.py`** (§3) and add a `|ret_1d| > 20%` corporate-action screen with logging. *This corrupts labels, not just features.*
-3. **Fix the interest-rate feed** frozen since 2025-04-03 (§4), or commit to dropping the column.
-4. **Raise `_IV_WINDOW` from 30 to 252** in `process.py` (§5) — near-free, and `ivp`/`ivr` are among the strongest measured signals.
-5. **Decide the symbol universe** (§6): point-in-time F&O constituents if obtainable, otherwise record the survivorship bias explicitly.
+1. ~~**Fix the leak** (§2).~~ **Done.** `ORDER BY symbol, date` in `_load_base`; `_add_derived` sorts defensively; `validate_no_lookahead()` runs inside `build_dataset` and raises on any deviation from the true backward return or |corr(ret_1d, next_day_return)| > 0.5. Verified on live data: max deviation 0.0e+00, and the guard correctly rejects the old table.
+2. ~~**Use `adjclose` in `yahoo.py`; add a corporate-action screen** (§3).~~ **Done.** `yahoo.py` now reads `indicators.adjclose` with a per-point fallback to raw close. `screen_corporate_actions()` blanks any `|ret_1d| > 20%` row, its whole contaminated momentum window, and the label on the preceding row. Verified against the real VEDL (−64.9%) and TRENT (−33.0%) events.
+3. **Fix the interest-rate feed** (§4). *Still open — needs a data refresh, not a code change.* `ADJUSTED_MIFOR.csv` covers **2021-06-15 → 2025-04-04**; every date outside that range silently inherits the boundary value. `rates.py` now logs a loud warning (once per boundary) and exposes `rate_is_stale()`, but a ten-year download needs the actual FBIL series extended at **both** ends.
+4. ~~**Raise `_IV_WINDOW` from 30 to 252**~~ **Done** (`process.py`), with `_IV_MIN_PERIODS = 60` so short windows yield NULL instead of a percentile off a handful of points. Also fixed a latent bug where NaNs inflated the percentile denominator. *Takes effect only after `option_metrics` is re-processed — `ivp`/`ivr` live in that table's JSONB.*
+5. **Decide the symbol universe** (§6): point-in-time F&O constituents if obtainable, otherwise record the survivorship bias explicitly. *Open — this is a judgement call, not a code fix.*
 
 **During the build:**
 6. Rebuild `ml_dataset` over the full span (drop `limit_dates`). Verify `ret_1d` reconciles against `pct_change(1)` before proceeding further.

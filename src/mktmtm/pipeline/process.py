@@ -52,7 +52,16 @@ OUTPUT_FILENAME = "processed_data.json"
 
 _YZ_WINDOW = 30
 _YZ_MAX_LOOKBACK = 90
-_IV_WINDOW = 30
+
+# Trailing window for IV percentile / rank, in trading days. One year (252) is
+# the standard; the previous value of 30 was forced by having only a month of
+# history and made ``ivp`` a 30-valued step function (min 1/30 = 3.33%).
+# ``ivp``/``ivr`` are among the strongest signals measured in
+# docs/data/ml-dataset-report.md §7, so the short window was costing real
+# information. Rows with fewer than ``_IV_MIN_PERIODS`` observations behind them
+# get NULL rather than a percentile computed off a handful of points.
+_IV_WINDOW = 252
+_IV_MIN_PERIODS = 60
 
 
 def load_spot_prices(symbols: list[str], yahoo_dir: Path) -> dict[str, dict[str, float]]:
@@ -97,12 +106,17 @@ def discover_bhavcopy_files(bhavcopy_dir: Path) -> list[tuple[Path, datetime]]:
 def compute_rolling_iv_percentile_and_rank(
     iv_df: pd.DataFrame,
     window_size: int = _IV_WINDOW,
+    min_periods: int = _IV_MIN_PERIODS,
 ) -> pd.DataFrame:
     """Compute rolling IV percentile + min-max rank over a trailing window.
 
     Input frame must have a numeric ``iv_30`` column. Adds ``ivp`` (0..1
     percentile) and ``ivr`` (0..1 min-max rank, None when the window is
     flat) columns.
+
+    Windows with fewer than ``min_periods`` finite observations yield None: a
+    percentile computed off a handful of points is noise wearing a percentile's
+    clothes, and it is better to train on NULL than on that.
     """
     iv_30d_percentiles: list[float | None] = []
     iv_30d_ranks: list[float | None] = []
@@ -112,7 +126,10 @@ def compute_rolling_iv_percentile_and_rank(
         start = max(0, i - window_size + 1)
         sub = vals[start : i + 1]
         current_val = vals[i]
-        if len(sub) == 0 or not np.isfinite(current_val):
+        # NaNs must be excluded, not merely skipped by the comparison: they
+        # would otherwise inflate the denominator and deflate every percentile.
+        sub = sub[np.isfinite(sub)]
+        if len(sub) < min_periods or not np.isfinite(current_val):
             iv_30d_percentiles.append(None)
             iv_30d_ranks.append(None)
             continue

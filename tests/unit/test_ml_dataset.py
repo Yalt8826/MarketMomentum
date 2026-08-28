@@ -5,7 +5,14 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from mktmtm.ml.dataset import _add_derived, _add_targets, _lift_ce_pe, _ratio
+from mktmtm.ml.dataset import (
+    _add_derived,
+    _add_targets,
+    _lift_ce_pe,
+    _ratio,
+    screen_corporate_actions,
+    validate_no_lookahead,
+)
 
 
 def _frame() -> pd.DataFrame:
@@ -119,3 +126,104 @@ def test_derived_features() -> None:
     assert out["put_call_vol_ratio"].iloc[0] == pytest.approx(0.5)
     assert out["put_call_oi_ratio"].iloc[0] == pytest.approx(0.5)
     assert out["otm_put_iv_premium"].iloc[0] == pytest.approx(1.5)  # 12.0 - 10.5
+
+
+# ───────────────── regression: look-ahead + corporate actions ─────────────────
+# Guards for the defects found in docs/data/ml-dataset-report.md §2/§3.
+
+
+def _with_derived_inputs(df: pd.DataFrame) -> pd.DataFrame:
+    """Pad a price-only frame with the columns _add_derived expects."""
+    n = len(df)
+    out = df.copy()
+    for col, val in (
+        ("rv_yz", 0.10), ("ce_iv_30", 10.0), ("ce_iv_90", 12.0), ("pe_iv_30", 10.5),
+        ("chain_pe_vol", 50.0), ("chain_ce_vol", 100.0),
+        ("chain_pe_oi", 500.0), ("chain_ce_oi", 1000.0), ("otm_put_iv", 12.0),
+    ):
+        out[col] = [val] * n
+    out["expiry_30d"] = pd.to_datetime(["2026-09-10"] * n)
+    out["upcoming_earning_date"] = pd.to_datetime([pd.NaT] * n)
+    return out
+
+
+def _unsorted_frame() -> pd.DataFrame:
+    """One symbol, rows deliberately in reverse-chronological order.
+
+    This is the shape Postgres returned without an ORDER BY, and it is what made
+    ret_1d come out as the negated *forward* return.
+    """
+    return pd.DataFrame(
+        {
+            "symbol": ["A"] * 4,
+            "date": pd.to_datetime(
+                ["2026-08-14", "2026-08-13", "2026-08-12", "2026-08-11"]
+            ),
+            "underlying_price": [103.0, 99.0, 101.0, 100.0],
+        }
+    )
+
+
+def test_derived_returns_are_backward_even_if_rows_arrive_unsorted() -> None:
+    """_add_derived must sort first; otherwise ret_1d encodes tomorrow."""
+    derived = _add_derived(_with_derived_inputs(_unsorted_frame()))
+    out = derived.sort_values("date").reset_index(drop=True)
+    assert pd.isna(out.loc[0, "ret_1d"])  # first day has no yesterday
+    assert out.loc[1, "ret_1d"] == pytest.approx(101.0 / 100.0 - 1.0)
+    assert out.loc[2, "ret_1d"] == pytest.approx(99.0 / 101.0 - 1.0)
+    assert out.loc[3, "ret_1d"] == pytest.approx(103.0 / 99.0 - 1.0)
+
+
+def test_validate_no_lookahead_accepts_a_clean_frame() -> None:
+    df = _add_targets(_add_derived(_with_derived_inputs(_unsorted_frame())))
+    validate_no_lookahead(df)  # must not raise
+
+
+def test_validate_no_lookahead_catches_reversed_returns() -> None:
+    """The exact corruption seen in production: ret_1d = P(t)/P(t+1) - 1."""
+    df = _add_targets(_add_derived(_with_derived_inputs(_unsorted_frame())))
+    df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+    df["ret_1d"] = df["underlying_price"] / df["underlying_price"].shift(-1) - 1.0
+    with pytest.raises(ValueError, match="look-ahead check FAILED"):
+        validate_no_lookahead(df)
+
+
+def _split_frame() -> pd.DataFrame:
+    """A clean run, then a 2:1 split between 08-13 and 08-14."""
+    return pd.DataFrame(
+        {
+            "symbol": ["A"] * 5,
+            "date": pd.to_datetime(
+                ["2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-17"]
+            ),
+            "underlying_price": [100.0, 101.0, 102.0, 51.0, 52.0],
+        }
+    )
+
+
+def test_corporate_action_screen_blanks_the_jump_and_its_label() -> None:
+    df = _add_targets(_add_derived(_with_derived_inputs(_split_frame())))
+    out = screen_corporate_actions(df).sort_values("date").reset_index(drop=True)
+
+    # the -50% "return" itself is gone
+    assert pd.isna(out.loc[3, "ret_1d"])
+    # so is the label on the row before it, which would otherwise "predict" the split
+    assert pd.isna(out.loc[2, "next_day_return"])
+    assert pd.isna(out.loc[2, "next_day_direction"])
+    # untouched rows survive
+    assert out.loc[1, "ret_1d"] == pytest.approx(101.0 / 100.0 - 1.0)
+    assert out.loc[1, "next_day_direction"] == 1
+
+
+def test_corporate_action_screen_clears_the_whole_lookback_window() -> None:
+    """A split contaminates ret_5d for the following 5 rows, not just the jump."""
+    df = _add_targets(_add_derived(_with_derived_inputs(_split_frame())))
+    out = screen_corporate_actions(df).sort_values("date").reset_index(drop=True)
+    assert out.loc[3:, "ret_5d"].isna().all()
+
+
+def test_corporate_action_screen_is_a_noop_on_clean_data() -> None:
+    df = _add_targets(_add_derived(_with_derived_inputs(_frame())))
+    out = screen_corporate_actions(df)
+    assert out["ret_1d"].notna().sum() == df["ret_1d"].notna().sum()
+    assert out["next_day_return"].notna().sum() == df["next_day_return"].notna().sum()

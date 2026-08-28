@@ -30,6 +30,8 @@ __all__ = [
     "build_dataset",
     "compute_chain_aggregates",
     "export_parquet",
+    "screen_corporate_actions",
+    "validate_no_lookahead",
     "write_dataset",
 ]
 
@@ -73,6 +75,14 @@ DATASET_COLUMNS = (
 )
 
 _GREEK_KEYS = ("delta", "gamma", "theta", "vega", "rho")
+
+# A single-day underlying move larger than this is treated as a corporate action
+# (split / bonus / demerger), not a return. NSE has no daily price band on F&O
+# underlyings, but a genuine >20% single-day move in a large-cap F&O name is rare
+# enough that screening is worth more than the handful of real moves it discards.
+_MAX_ABS_DAILY_RETURN = 0.20
+
+_MOMENTUM_PERIODS = (1, 5, 10, 20)
 
 # Chain aggregates are computed in SQL (jsonb is C-speed there; a python pass
 # over ~320M chain elements would take minutes). Each lateral join re-parses
@@ -196,11 +206,16 @@ def _load_base(conn: Any, symbols: list[str] | None, limit_dates: int | None) ->
             "date IN (SELECT DISTINCT date FROM option_metrics ORDER BY date DESC LIMIT %s)"
         )
         params.append(limit_dates)
+    # ORDER BY is load-bearing, not cosmetic: every momentum feature below is a
+    # groupby().pct_change(), which trusts row order. Without it Postgres returns
+    # heap order and the returns come out scrambled (silently, and differently on
+    # each rebuild). See docs/data/ml-dataset-report.md §2.
     sql = (
         "SELECT symbol, date, underlying_price, interest_rate, rv_yz, "
         "expiry_30d, expiry_60d, expiry_90d, upcoming_earning_date, ce, pe "
         "FROM option_metrics"
         + (" WHERE " + " AND ".join(where) if where else "")
+        + " ORDER BY symbol, date"
     )
     df = _read_sql(conn, sql, params)
     for col in ("date", "expiry_30d", "expiry_60d", "expiry_90d", "upcoming_earning_date"):
@@ -250,13 +265,17 @@ def _lift_ce_pe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _add_derived(df: pd.DataFrame) -> pd.DataFrame:
-    """Tier-2 features: momentum returns, vol spreads, days-to-* (needs chain cols merged)."""
-    out = df.copy()
+    """Tier-2 features: momentum returns, vol spreads, days-to-* (needs chain cols merged).
+
+    Requires the frame to be sorted by ``(symbol, date)`` — the pct_change calls
+    below read row order directly. ``build_dataset`` guarantees this.
+    """
+    out = df.sort_values(["symbol", "date"]).reset_index(drop=True)
     out["underlying_price"] = pd.to_numeric(out["underlying_price"], errors="coerce")
     out["rv_yz"] = pd.to_numeric(out["rv_yz"], errors="coerce")
 
     g = out.groupby("symbol", sort=False)
-    for n in (1, 5, 10, 20):
+    for n in _MOMENTUM_PERIODS:
         out[f"ret_{n}d"] = g["underlying_price"].pct_change(periods=n)
 
     # rv_yz is a decimal fraction (0.072 = 7.2%); iv_* are percent-scale (10.64).
@@ -271,6 +290,115 @@ def _add_derived(df: pd.DataFrame) -> pd.DataFrame:
     out["put_call_oi_ratio"] = _ratio(out["chain_pe_oi"], out["chain_ce_oi"])
     out["otm_put_iv_premium"] = out["otm_put_iv"] - out["pe_iv_30"]
     return out
+
+
+def screen_corporate_actions(
+    df: pd.DataFrame, threshold: float = _MAX_ABS_DAILY_RETURN
+) -> pd.DataFrame:
+    """NULL out momentum features and targets contaminated by corporate actions.
+
+    ``underlying_price`` comes from Yahoo's close series, which does not fully
+    account for demergers and some Indian corporate actions even when the
+    adjusted series is used (e.g. VEDL 2026-04-30 shows a −64.9% "return").
+    An unscreened split poisons three things at once: the momentum features that
+    span it, the *label* on the preceding row, and the scale of every fitted
+    model (a −65% observation is a 40-sigma event in a σ≈1.6% series).
+
+    For each flagged jump at row ``i`` this blanks ``ret_Nd`` over ``i..i+N-1``
+    (the whole contaminated lookback window) and the target on row ``i-1`` (the
+    label that would otherwise "predict" the corporate action).
+
+    Requires ``(symbol, date)`` sort order. Logs every flagged row — a silent
+    filter here is how survivorship-style bias creeps in.
+    """
+    out = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+    if "ret_1d" not in out.columns:
+        return out
+
+    jump = out["ret_1d"].abs() > threshold
+    n_flagged = int(jump.sum())
+    if not n_flagged:
+        logger.info("Corporate-action screen: no |ret_1d| > %.0f%% rows", threshold * 100)
+        return out
+
+    for _, row in out.loc[jump, ["symbol", "date", "underlying_price", "ret_1d"]].iterrows():
+        logger.warning(
+            "Corporate-action screen: %s %s ret_1d=%+.1f%% (price %.2f) — "
+            "blanking contaminated returns and adjacent target",
+            row["symbol"], pd.Timestamp(row["date"]).date(), row["ret_1d"] * 100.0,
+            row["underlying_price"],
+        )
+
+    by_symbol = jump.groupby(out["symbol"], sort=False)
+
+    # Derive both masks from `jump` before mutating anything: reading ret_1d back
+    # after blanking it would silently disarm the label screen below.
+    label_spans_jump = by_symbol.shift(-1).fillna(False).astype(bool)
+
+    for n in _MOMENTUM_PERIODS:
+        col = f"ret_{n}d"
+        if col not in out.columns:
+            continue
+        # a jump anywhere in the trailing n rows (inclusive) corrupts this window
+        contaminated = by_symbol.transform(
+            lambda s, w=n: s.rolling(w, min_periods=1).max()
+        ).astype(bool)
+        out.loc[contaminated, col] = np.nan
+
+    # the label on the row *before* the jump spans the corporate action
+    for col in ("next_day_return", "next_day_direction"):
+        if col in out.columns:
+            out.loc[label_spans_jump, col] = np.nan
+
+    logger.warning(
+        "Corporate-action screen: flagged %d row(s) above |%.0f%%|; "
+        "momentum windows and adjacent labels set to NULL",
+        n_flagged, threshold * 100,
+    )
+    return out
+
+
+def validate_no_lookahead(df: pd.DataFrame, atol: float = 1e-9) -> None:
+    """Fail the build if ``ret_1d`` is not a genuine *backward* return.
+
+    Cheap insurance against the row-ordering bug that produced a perfectly
+    inverted ``ret_1d`` (mean daily rank IC of −1.00 against the target, and a
+    trivial 100%-accuracy rule). That bug was obvious at 21 days because the
+    corruption was a clean reversal; at 2500 days a partial scramble would look
+    like a merely excellent model. See docs/data/ml-dataset-report.md §2.
+    """
+    if "ret_1d" not in df.columns or df.empty:
+        return
+    ordered = df.sort_values(["symbol", "date"])
+    truth = ordered.groupby("symbol", sort=False)["underlying_price"].pct_change(1)
+    stored = ordered["ret_1d"]
+    both = stored.notna() & truth.notna()
+    if not both.any():
+        return
+
+    max_dev = float((stored[both] - truth[both]).abs().max())
+    if max_dev > atol:
+        n_bad = int(((stored[both] - truth[both]).abs() > atol).sum())
+        raise ValueError(
+            f"look-ahead check FAILED: ret_1d deviates from the backward "
+            f"pct_change on {n_bad}/{int(both.sum())} rows (max |diff| = {max_dev:.3e}). "
+            f"Rows are almost certainly not sorted by (symbol, date) before the "
+            f"momentum features are computed."
+        )
+
+    # a backward return must not be a function of the forward one
+    fwd = ordered.get("next_day_return")
+    if fwd is not None:
+        pair = pd.concat([stored, fwd], axis=1).dropna()
+        if len(pair) > 30:
+            leak = float(pair.iloc[:, 0].corr(pair.iloc[:, 1]))
+            if abs(leak) > 0.5:
+                raise ValueError(
+                    f"look-ahead check FAILED: corr(ret_1d, next_day_return) = "
+                    f"{leak:+.4f}. A backward return cannot track the forward one; "
+                    f"this indicates target leakage."
+                )
+    logger.info("Look-ahead check passed (max |ret_1d deviation| = %.2e)", max_dev)
 
 
 def _add_targets(df: pd.DataFrame) -> pd.DataFrame:
@@ -293,15 +421,24 @@ def build_dataset(
     symbols: list[str] | None = None,
     limit_dates: int | None = None,
 ) -> pd.DataFrame:
-    """Full training matrix: identity + level + CE/PE + Tier2 + Tier3 + targets."""
+    """Full training matrix: identity + level + CE/PE + Tier2 + Tier3 + targets.
+
+    Screens corporate actions and asserts the absence of look-ahead before
+    returning; a failed check raises rather than writing a corrupt table.
+    """
     base = _load_base(conn, symbols, limit_dates)
     if base.empty:
         return base
+    # Belt-and-braces alongside the SQL ORDER BY: the merge below can reorder,
+    # and every momentum feature depends on row order.
+    base = base.sort_values(["symbol", "date"]).reset_index(drop=True)
     chain = compute_chain_aggregates(conn, symbols, limit_dates)
     df = base.merge(chain, on=["symbol", "date"], how="left")
     df = _lift_ce_pe(df)
     df = _add_derived(df)
     df = _add_targets(df)
+    validate_no_lookahead(df)
+    df = screen_corporate_actions(df)
     return df[DATASET_COLUMNS]
 
 

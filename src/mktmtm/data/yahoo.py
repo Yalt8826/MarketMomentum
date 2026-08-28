@@ -11,6 +11,7 @@ Cleaned JSON (only date -> underlying_price) goes to
 from __future__ import annotations
 
 import json
+import logging
 import time
 from contextlib import suppress
 from datetime import datetime
@@ -21,6 +22,8 @@ import requests
 
 from mktmtm.config.settings import settings
 from mktmtm.data.symbols import load_fno_symbols
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "INDEX_MAP",
@@ -164,10 +167,27 @@ def download_yahoo_prices(
         try:
             result = stock_data["chart"]["result"][0]
             ts_list = result.get("timestamp", [])
-            closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
+            indicators = result.get("indicators", {})
+            closes = indicators.get("quote", [{}])[0].get("close", [])
+
+            # Prefer the split/dividend-adjusted series. The raw ``quote.close``
+            # carries corporate-action discontinuities straight into the returns
+            # (and therefore into the next-day label) — see
+            # docs/data/ml-dataset-report.md §3. We already request it via
+            # includeAdjustedClose=true; it was simply being discarded.
+            adj_list = indicators.get("adjclose") or []
+            adj_closes = adj_list[0].get("adjclose", []) if adj_list else []
+            if not adj_closes:
+                logger.warning(
+                    "%s: no adjusted close in Yahoo response — falling back to raw "
+                    "close; corporate actions will show as spurious returns",
+                    symbol,
+                )
 
             for idx, ts in enumerate(ts_list):
-                close_px = closes[idx] if idx < len(closes) else None
+                close_px = adj_closes[idx] if idx < len(adj_closes) else None
+                if close_px is None:  # adjclose can be sparse; fall back per-point
+                    close_px = closes[idx] if idx < len(closes) else None
                 if close_px is None:
                     continue
                 date_key = datetime.fromtimestamp(ts).strftime("%d-%b-%Y")
