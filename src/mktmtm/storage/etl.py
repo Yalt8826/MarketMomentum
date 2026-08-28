@@ -16,7 +16,7 @@ bhavcopy file.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import date, datetime
@@ -59,6 +59,17 @@ def _safe_T(date_key: str, expiry: str | None) -> float:
     return get_time_to_expiry_in_years(date_key, expiry) if expiry else 0.0
 
 
+def _oi_int(v: Any) -> int:
+    """Open interest -> int; missing/NaN -> 0 (pre-OI bhavcopy rows degrade gracefully)."""
+    if v is None:
+        return 0
+    try:
+        f = float(v)
+        return int(f) if np.isfinite(f) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _load_bhavcopy(fp: Path) -> pd.DataFrame | None:
     """Try reading with 0/2 skipped rows to handle header variants."""
     for skip in (0, 2):
@@ -70,6 +81,50 @@ def _load_bhavcopy(fp: Path) -> pd.DataFrame | None:
             pass
     logger.warning("skip corrupt bhavcopy: %s", fp.name)
     return None
+
+
+def _load_cache(cache_path: Path) -> dict[str, pd.DataFrame] | None:
+    """Symbol-indexed bhavcopy parquet cache, or None when absent.
+
+    Built by ``mktmtm preparse-bhavcopy`` (see ``data/bhavcopy.build_bhavcopy_cache``).
+    Slicing per symbol from this cache replaces the per-symbol re-parse of
+    every CSV, cutting the ETL runtime by roughly 4x.
+    """
+    if not cache_path.exists():
+        return None
+    df = pd.read_parquet(cache_path)
+    df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+    out: dict[str, pd.DataFrame] = {}
+    for sym, sub in df.groupby("SYMBOL", sort=False):
+        out[str(sym)] = sub.sort_values("DATE").reset_index(drop=True)
+    logger.info("bhavcopy cache: %d symbols, %d rows (%s)", len(out), len(df), cache_path)
+    return out or None
+
+
+def _iter_symbol_days(
+    sym: str,
+    bhav_files: list[Path],
+    cache: dict[str, pd.DataFrame] | None,
+) -> Iterator[tuple[datetime, pd.DataFrame]]:
+    """Yield (trade_date, symbol_rows) from the parquet cache, else from CSVs."""
+    if cache:
+        sub = cache.get(sym)
+        if sub is None or sub.empty:
+            return
+        for date_obj in sub["DATE"].unique():
+            yield date_obj, sub[sub["DATE"] == date_obj]
+        return
+    for fp in bhav_files:
+        date_obj = parse_bhavcopy_date(fp.name)
+        if date_obj is None:
+            continue
+        df = _load_bhavcopy(fp)
+        if df is None:
+            continue
+        df_sym = df[df["SYMBOL"] == sym]
+        if df_sym.empty:
+            continue
+        yield date_obj, df_sym
 
 
 def _iv_safe(
@@ -119,26 +174,17 @@ def _process_symbol(
     daily_rate: Mapping[date, float],
     earnings_map: dict[str, list[date]],
     cfg: Settings,
+    cache: dict[str, pd.DataFrame] | None = None,
 ) -> None:
     logger.info("┌─ processing %-10s", sym)
     time_map: dict[str, dict[str, Any]] = {}
     daily_ohlc: list[dict[str, Any]] = []
 
-    for fp in bhav_files:
-        date_obj = parse_bhavcopy_date(fp.name)
-        if date_obj is None:
-            continue
+    for date_obj, df_sym in _iter_symbol_days(sym, bhav_files, cache):
         date_key = date_obj.strftime("%d-%b-%Y")
 
         if len(time_map) % 100 == 0 and len(time_map) > 0:
             logger.info("... %s rows accumulated for %s", len(time_map), sym)
-
-        df = _load_bhavcopy(fp)
-        if df is None:
-            continue
-        df_sym = df[df["SYMBOL"] == sym]
-        if df_sym.empty:
-            continue
 
         spot = spot_price_map.get(sym, {}).get(date_key)
         if spot is None or not np.isfinite(spot):
@@ -234,6 +280,8 @@ def _process_symbol(
                     low=float(row["LOW"]),
                     close=float(row["CLOSE"]),
                     volume=int(row["CONTRACTS"]),
+                    oi=_oi_int(row.get("OPEN_INT")),
+                    chg_oi=_oi_int(row.get("CHG_IN_OI")),
                     iv=iv,
                     delta=delta,
                 )
@@ -280,6 +328,7 @@ def _process_symbol(
                 S=float(spot), K=float(strike), T=t_90, r=r_dec, is_call=True,
             ),
             volume=int(opts[opts["OPTION_TYP"] == "CE"]["CONTRACTS"].sum()),
+            oi=_oi_int(ce30.get("OPEN_INT")),
             last_price_30d=float(ce30["SETTLE_PR"]),
             close=float(ce30["CLOSE"]),
             open=float(ce30["OPEN"]),
@@ -306,6 +355,7 @@ def _process_symbol(
                 S=float(spot), K=float(strike), T=t_90, r=r_dec, is_call=False,
             ),
             volume=int(opts[opts["OPTION_TYP"] == "PE"]["CONTRACTS"].sum()),
+            oi=_oi_int(pe30.get("OPEN_INT")),
             last_price_30d=float(pe30["SETTLE_PR"]),
             close=float(pe30["CLOSE"]),
             open=float(pe30["OPEN"]),
@@ -392,15 +442,18 @@ def main(settings_: Settings | None = None) -> None:
     # ───────── spot-price map (Yahoo) ─────────
     spot_price_map = load_spot_prices(symbols, cfg.raw_data_dir / "yahoo_finance")
 
-    # ───────── bhavcopy list ─────────
+    # ───────── bhavcopy list + parquet cache ─────────
     bhavcopy_dir = cfg.raw_data_dir / "bhavcopy" / "extracted"
     bhav_files = [fp for fp, _ in discover_bhavcopy_files(bhavcopy_dir)]
     logger.info("bhav-copies to scan: %s", len(bhav_files))
+    cache = _load_cache(cfg.processed_data_dir / "bhavcopy_cache.parquet")
 
     # ───────── threaded execution ─────────
     with ThreadPoolExecutor(max_workers=cfg.max_workers) as pool:
         futures = {
-            pool.submit(_process_symbol, s, bhav_files, spot_price_map, daily_rate, earnings_map, cfg): s
+            pool.submit(
+                _process_symbol, s, bhav_files, spot_price_map, daily_rate, earnings_map, cfg, cache
+            ): s
             for s in symbols
         }
         for fut in as_completed(futures):

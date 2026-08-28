@@ -187,6 +187,17 @@ def fill_missing_rv_with_interpolation(result: dict[str, Any]) -> dict[str, Any]
     return result
 
 
+def _oi_int(v: Any) -> int:
+    """Open interest -> int; missing/NaN -> 0 (pre-OI bhavcopy rows degrade gracefully)."""
+    if v is None:
+        return 0
+    try:
+        f = float(v)
+        return int(f) if np.isfinite(f) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _build_chain_rows(
     options_data: pd.DataFrame,
     symbol: str,
@@ -229,6 +240,8 @@ def _build_chain_rows(
                     "low": float(row["LOW"]),
                     "close": float(row["CLOSE"]),
                     "volume": int(row["CONTRACTS"]),
+                    "oi": _oi_int(row.get("OPEN_INT")),
+                    "chg_oi": _oi_int(row.get("CHG_IN_OI")),
                     "iv": iv_row * 100.0 if iv_row else 0.0,
                     "delta": delta_row,
                 }
@@ -492,6 +505,7 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                             "iv_60": ce_iv_60,
                             "iv_90": ce_iv_90,
                             "volume": ce_volume,
+                            "oi": _oi_int(ce30.get("OPEN_INT")),
                             "last_price_30d": ce_30d_price,
                             "close": float(ce30["CLOSE"]),
                             "open": float(ce30["OPEN"]),
@@ -506,6 +520,7 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                             "iv_60": pe_iv_60,
                             "iv_90": pe_iv_90,
                             "volume": pe_volume,
+                            "oi": _oi_int(pe30.get("OPEN_INT")),
                             "last_price_30d": pe_30d_price,
                             "close": float(pe30["CLOSE"]),
                             "open": float(pe30["OPEN"]),

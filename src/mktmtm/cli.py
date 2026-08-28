@@ -64,12 +64,27 @@ def fetch_bhavcopy(
     typer.echo(f"Downloaded and filtered bhavcopy for {processed} trading days.")
 
 
+@app.command(name="preparse-bhavcopy")
+def preparse_bhavcopy() -> None:
+    """Build the single-pass parquet cache of all bhavcopy CSVs (speeds up `etl` ~4x)."""
+    from mktmtm.data.bhavcopy import build_bhavcopy_cache
+
+    src = settings.raw_data_dir / "bhavcopy" / "extracted"
+    out = settings.processed_data_dir / "bhavcopy_cache.parquet"
+    build_bhavcopy_cache(src, out)
+    typer.echo(f"Cache written: {out} — `mktmtm etl` will pick it up automatically.")
+
+
 @app.command(name="fetch-yahoo")
 def fetch_yahoo(
     days: Annotated[
         int,
-        typer.Option("--days", min=1, help="Number of days of daily closes to fetch per symbol."),
-    ] = 365,
+        typer.Option(
+            "--days",
+            min=1,
+            help="Number of days of daily closes to fetch per symbol (default 2500 ≈ full 5-year bhavcopy window).",
+        ),
+    ] = 2500,
     output_dir: Annotated[
         Path | None,
         typer.Option("--output-dir", help="Output directory (default: <raw_data_dir>/yahoo_finance)."),
@@ -107,6 +122,59 @@ def etl() -> None:
 
     run_etl()
     typer.echo("ETL finished.")
+
+
+@app.command(name="make-dataset")
+def make_dataset(
+    limit_symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--limit-symbols",
+            help="Comma-separated symbol subset (smoke runs).",
+        ),
+    ] = None,
+    limit_dates: Annotated[
+        int | None,
+        typer.Option(
+            "--limit-dates",
+            min=1,
+            help="Only the N most recent trading dates (smoke runs).",
+        ),
+    ] = None,
+    export_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--export-parquet",
+            help="Parquet output path (default: <processed_data_dir>/ml_dataset.parquet).",
+        ),
+    ] = None,
+    no_export: Annotated[
+        bool,
+        typer.Option("--no-export", help="Skip the parquet export (PG only)."),
+    ] = False,
+) -> None:
+    """Build the ML training dataset (features + targets) into ml_dataset (+ parquet)."""
+    import psycopg2
+
+    from mktmtm.ml.dataset import build_dataset, export_parquet, write_dataset
+    from mktmtm.storage.db import build_dsn
+
+    syms = _parse_csv(limit_symbols, str)
+    conn = psycopg2.connect(build_dsn())
+    try:
+        df = build_dataset(conn, symbols=syms, limit_dates=limit_dates)
+        if df.empty:
+            typer.echo("option_metrics is empty — run fetch-bhavcopy/fetch-yahoo, process, etl first.")
+            raise typer.Exit(code=1)
+        written = write_dataset(conn, df)
+        labeled = int(df["next_day_return"].notna().sum())
+        typer.echo(f"Wrote {written} rows to ml_dataset ({labeled} with targets).")
+        if not no_export:
+            out = export_path or (settings.processed_data_dir / "ml_dataset.parquet")
+            export_parquet(df, out)
+            typer.echo(f"Parquet export: {out}")
+    finally:
+        conn.close()
 
 
 @app.command()

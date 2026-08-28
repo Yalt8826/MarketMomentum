@@ -62,8 +62,8 @@ exclude = [
 ]
 
 [[tool.mypy.overrides]]
-# psycopg2 ships no type stubs; treat it as untyped (like other C-extension deps).
-module = ["psycopg2", "psycopg2.*"]
+# psycopg2 and pyarrow ship no type stubs; treat them as untyped (like other C-extension deps).
+module = ["psycopg2", "psycopg2.*", "pyarrow", "pyarrow.*"]
 ignore_missing_imports = true
 
 [tool.ruff]

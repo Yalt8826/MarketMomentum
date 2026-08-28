@@ -30,12 +30,17 @@ __all__ = [
 ]
 
 # ---- Map common index futures to Yahoo tickers ---------------------------- #
+# Verified live against Yahoo's chart API (2026-08-27): ^NSEI = NIFTY 50,
+# ^NSEBANK = NIFTY BANK, ^NSMIDCP = NIFTY NEXT 50. Yahoo no longer serves
+# FINNIFTY / MIDCPNIFTY (^NSEFIN / ^NIFMIDCP50 return Not Found), so those
+# two catalog symbols have no spot source and stay absent from the dataset.
 INDEX_MAP: dict[str, str] = {
     # symbol in your JSON    : Yahoo ticker
     "NIFTY": "^NSEI",
     "BANKNIFTY": "^NSEBANK",
-    "FINNIFTY": "^NSEFIN",
-    "MIDCPNIFTY": "^NIFMIDCP50",
+    "FINNIFTY": "^NSEFIN",  # broken on Yahoo (Not Found) — kept for the record
+    "MIDCPNIFTY": "^NIFMIDCP50",  # broken on Yahoo (Not Found) — kept for the record
+    "NIFTYNXT50": "^NSMIDCP",
     "SENSEX": "^BSESN",
 }
 
@@ -86,10 +91,14 @@ def _segment_for(symbol: str) -> str:
 def download_yahoo_prices(
     symbols: list[str] | None = None,
     output_dir: Path | None = None,
-    days: int = 365,
+    days: int = 2500,
     symbols_meta: dict[str, dict[str, Any]] | None = None,
 ) -> int:
     """Download ~`days` of daily closes for each symbol from Yahoo Finance.
+
+    Defaults to 2500 days (~7y) so a bare ``fetch-yahoo`` covers the full
+    5-year bhavcopy window; the old 365-day default silently truncated the
+    dataset to one year.
 
     Writes ``<SYMBOL>_raw.json`` and ``<SYMBOL>_processed.json`` into
     ``output_dir`` (default ``Settings.raw_data_dir / "yahoo_finance"``).

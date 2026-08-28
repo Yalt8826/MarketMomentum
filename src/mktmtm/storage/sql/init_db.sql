@@ -20,6 +20,7 @@
 \ir init_option_metrics.sql
 \ir backtest_results.sql
 \ir symbol_data.sql
+\ir init_ml_dataset.sql
 
 -- ============================================================================
 --  Done. Sanity check:

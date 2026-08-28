@@ -22,6 +22,10 @@ scripts. Python 3.12, managed with [uv](https://docs.astral.sh/uv/).
   threaded per-symbol ETL and a chunked/sharded ETL variant; SQL DDLs included.
 - **Backtesting** — short-strangle engine with 20-delta entry, weekly delta
   hedges and exit-day logic; results persisted to PostgreSQL.
+- **ML dataset preparation** — `make-dataset` derives the supervised targets
+  (next-day return / direction) and ~45 features per symbol-day (IV levels,
+  percentile/rank, Greeks, momentum, vol spreads, chain aggregates incl.
+  put-call volume/OI ratios) into the `ml_dataset` table + a parquet export.
 - **Interfaces** — Typer CLI, FastAPI health API (`mktmtm-api`), Streamlit UI
   (`mktmtm-ui`).
 
@@ -63,6 +67,7 @@ uv run mktmtm fetch-bhavcopy                  # 5 years of NSE F&O bhavcopy → 
 uv run mktmtm fetch-yahoo                     # daily closes for catalog symbols → data/raw/yahoo_finance/
 uv run mktmtm process                         # enrich → data/processed/processed_data.json
 uv run mktmtm etl                             # threaded per-symbol ETL into PostgreSQL
+uv run mktmtm make-dataset                    # features + targets → ml_dataset (+ parquet)
 uv run mktmtm backtest                        # short-strangle backtest (4y × all symbols) → PG
 ```
 
@@ -75,6 +80,7 @@ uv run mktmtm backtest                        # short-strangle backtest (4y × a
 | `mktmtm fetch-yahoo` | Download daily closes from Yahoo (`--days`, `--output-dir`)        |
 | `mktmtm process`     | Run the processing engine (`--limit-days` for bounded smoke runs)  |
 | `mktmtm etl`         | Threaded per-symbol ETL into PostgreSQL                            |
+| `mktmtm make-dataset`| Build the ML matrix (features + targets) into `ml_dataset` (+ parquet export; `--limit-symbols`, `--limit-dates` for smoke runs) |
 | `mktmtm backtest`    | Short-strangle backtester (persists results to PostgreSQL)         |
 
 All commands are thin wrappers over the corresponding `mktmtm.*` modules;

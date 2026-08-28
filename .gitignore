@@ -25,3 +25,6 @@ models/promoted/
 
 .agents/
 .claude/
+
+etl_run.log
+*.log

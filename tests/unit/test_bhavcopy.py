@@ -79,6 +79,10 @@ def test_normalize_udiff_fixture_maps_codes_and_expiry() -> None:
     assert set(df["SYMBOL"]) == {"BANKNIFTY", "ABCAPITAL"}
     assert "STRIKE_PR" in df.columns
     assert "CONTRACTS" in df.columns
+    # open interest columns survive the UDiFF -> legacy mapping
+    assert "OPEN_INT" in df.columns
+    assert "CHG_IN_OI" in df.columns
+    assert (df["OPEN_INT"] > 0).any()
 
 
 def test_normalize_legacy_fixture_is_noop() -> None:
@@ -105,3 +109,43 @@ def test_normalize_udiff_maps_idf_to_futidx() -> None:
     assert by_code["STF"] == {"FUTSTK"}
     assert by_code["IDO"] == {"OPTIDX"}
     assert by_code["STO"] == {"OPTSTK"}
+
+
+def test_build_bhavcopy_cache_matches_direct_reads(tmp_path) -> None:
+    """Cache rows (normalized + DATE) equal per-date direct CSV reads."""
+    from mktmtm.data.bhavcopy import build_bhavcopy_cache
+
+    out = build_bhavcopy_cache(FIXTURES, tmp_path / "cache.parquet")
+    cache = pd.read_parquet(out)
+    assert "DATE" in cache.columns
+    assert cache["DATE"].notna().all()
+    # both fixtures parse
+    assert cache["DATE"].nunique() == 2
+
+    # per-symbol day frames must match direct CSV reads
+    for sym in ("BANKNIFTY", "ABCAPITAL"):
+        for date_obj, from_cache in _days_from_cache(cache, sym):
+            direct = _read_day_direct(sym, date_obj)
+            assert len(from_cache) == len(direct), (sym, date_obj)
+            if not direct.empty:
+                assert (from_cache["SYMBOL"] == sym).all()
+                # EXPIRY_DT normalized identically
+                assert set(from_cache["EXPIRY_DT"]) == set(direct["EXPIRY_DT"])
+
+
+def _days_from_cache(cache: pd.DataFrame, sym: str):
+    sub = cache[cache["SYMBOL"] == sym]
+    for date_obj in sub["DATE"].unique():
+        yield date_obj, sub[sub["DATE"] == date_obj].reset_index(drop=True)
+
+
+def _read_day_direct(sym: str, date_obj) -> pd.DataFrame:
+    from mktmtm.data.bhavcopy import parse_bhavcopy_date
+
+    candidates = list(FIXTURES.glob("*.csv"))
+    for fp in candidates:
+        if parse_bhavcopy_date(fp.name) == date_obj:
+            raw = pd.read_csv(fp)
+            df = normalize_bhavcopy_columns(raw)
+            return df[df["SYMBOL"] == sym].reset_index(drop=True)
+    return pd.DataFrame()

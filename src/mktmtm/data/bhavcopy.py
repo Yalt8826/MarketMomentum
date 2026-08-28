@@ -8,6 +8,7 @@ bare ``base_dir`` joins replaced by ``Settings.raw_data_dir`` paths.
 from __future__ import annotations
 
 import io
+import logging
 import time
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
@@ -50,6 +51,8 @@ UDIFF_COLUMN_MAP: dict[str, str] = {
     "ClsPric": "CLOSE",
     "SttlmPric": "SETTLE_PR",
     "TtlTradgVol": "CONTRACTS",
+    "OpnIntrst": "OPEN_INT",
+    "ChngInOpnIntrst": "CHG_IN_OI",
 }
 
 # UDiFF instrument-type codes -> legacy codes
@@ -109,6 +112,79 @@ def normalize_bhavcopy_columns(df: pd.DataFrame) -> pd.DataFrame:
     if "EXPIRY_DT" in df.columns:
         df["EXPIRY_DT"] = pd.to_datetime(df["EXPIRY_DT"], errors="coerce").dt.strftime("%d-%b-%Y")
     return df
+
+
+# Canonical column set the ETL consumes (normalized schema minus unused extras).
+_CACHE_COLUMNS = [
+    "INSTRUMENT", "SYMBOL", "EXPIRY_DT", "STRIKE_PR", "OPTION_TYP",
+    "OPEN", "HIGH", "LOW", "CLOSE", "SETTLE_PR", "CONTRACTS",
+    "OPEN_INT", "CHG_IN_OI",
+]
+
+
+def build_bhavcopy_cache(bhavcopy_dir: Path, out_path: Path) -> Path:
+    """One-pass parse of every bhavcopy CSV into a single parquet cache.
+
+    The threaded ETL re-reads and re-parses every CSV once per symbol
+    (~222 symbols x ~1,235 files), which dominates its multi-hour runtime.
+    This cache is built once in a few minutes and lets the ETL slice rows
+    by symbol instead of re-parsing files.
+
+    Rows are normalized to the legacy schema (same as
+    ``normalize_bhavcopy_columns``) plus a ``DATE`` column derived from the
+    trade date encoded in each filename, restricted to the canonical column
+    set above. Row groups are streamed with ``ParquetWriter`` so peak memory
+    stays at one file (~tens of MB), never the concatenated dataset.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    writer: pq.ParquetWriter | None = None
+    n_files = skipped = 0
+    first = True
+    for fp in sorted(Path(bhavcopy_dir).glob("*.csv")):
+        date_obj = parse_bhavcopy_date(fp.name)
+        if date_obj is None:
+            continue
+        df: pd.DataFrame | None = None
+        for skip in (0, 2):  # header-variant tolerance, mirrors storage.etl._load_bhavcopy
+            try:
+                cand = pd.read_csv(fp, skiprows=skip)
+                if "SYMBOL" in cand.columns or "TckrSymb" in cand.columns:
+                    df = cand
+                    break
+            except Exception:
+                continue
+        if df is None:
+            skipped += 1
+            continue
+        normalized = normalize_bhavcopy_columns(df)
+        normalized["DATE"] = pd.Timestamp(date_obj)
+        for col in _CACHE_COLUMNS:
+            if col not in normalized.columns:
+                normalized[col] = pd.NA
+        # uniform dtypes so every row group shares one parquet schema;
+        # categorical (dictionary-encoded) text columns keep the cache small
+        for col in _CACHE_COLUMNS:
+            if col in ("INSTRUMENT", "SYMBOL", "EXPIRY_DT", "OPTION_TYP"):
+                normalized[col] = normalized[col].astype("category")
+            else:
+                normalized[col] = pd.to_numeric(normalized[col], errors="coerce").astype("float64")
+        table = pa.Table.from_pandas(normalized[["DATE", *_CACHE_COLUMNS]], preserve_index=False)
+        if first:
+            writer = pq.ParquetWriter(out_path, table.schema)
+            first = False
+        assert writer is not None
+        writer.write_table(table)
+        n_files += 1
+
+    if writer is None:
+        raise ValueError(f"no bhavcopy files parsed under {bhavcopy_dir}")
+    writer.close()
+    logging.getLogger(__name__).info(
+        "bhavcopy cache: %d files (%d skipped) -> %s", n_files, skipped, out_path,
+    )
+    return out_path
 
 
 def get_bhavcopy_url(date: datetime) -> tuple[str, str, bool]:
