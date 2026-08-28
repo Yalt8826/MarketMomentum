@@ -39,6 +39,7 @@ from mktmtm.options.chain import (
 from mktmtm.options.pricing import black_scholes_greeks, implied_volatility_bisection
 from mktmtm.options.volatility import compute_yz_rolling_vol
 from mktmtm.pipeline.process import discover_bhavcopy_files, load_spot_prices
+from mktmtm.progress import progress_stage
 from mktmtm.storage.db import DBWriter, close_db_pool
 
 logger = logging.getLogger(__name__)
@@ -176,7 +177,7 @@ def _process_symbol(
     cfg: Settings,
     cache: dict[str, pd.DataFrame] | None = None,
 ) -> None:
-    logger.info("┌─ processing %-10s", sym)
+    logger.debug("┌─ processing %-10s", sym)
     time_map: dict[str, dict[str, Any]] = {}
     daily_ohlc: list[dict[str, Any]] = []
 
@@ -184,7 +185,7 @@ def _process_symbol(
         date_key = date_obj.strftime("%d-%b-%Y")
 
         if len(time_map) % 100 == 0 and len(time_map) > 0:
-            logger.info("... %s rows accumulated for %s", len(time_map), sym)
+            logger.debug("... %s rows accumulated for %s", len(time_map), sym)
 
         spot = spot_price_map.get(sym, {}).get(date_key)
         if spot is None or not np.isfinite(spot):
@@ -416,13 +417,13 @@ def _process_symbol(
 
     # ───────── write to DB ─────────
     if time_map:
-        logger.info("--> building %s rows for %s, writing to DB ...", len(time_map), sym)
+        logger.debug("--> building %s rows for %s, writing to DB ...", len(time_map), sym)
         with DBWriter(cfg) as w:
             for d_str, payload in time_map.items():
                 w.write_row(sym, d_str, payload)
-        logger.info("└─ %s rows stored for %s", len(time_map), sym)
+        logger.debug("└─ %s rows stored for %s", len(time_map), sym)
     else:
-        logger.info("└─ no data rows for %s", sym)
+        logger.debug("└─ no data rows for %s", sym)
 
 
 # ═════════════════════════ orchestrator ════════════════════════════════════
@@ -449,10 +450,15 @@ def main(settings_: Settings | None = None) -> None:
     cache = _load_cache(cfg.processed_data_dir / "bhavcopy_cache.parquet")
 
     # ───────── threaded execution ─────────
-    with ThreadPoolExecutor(max_workers=cfg.max_workers) as pool:
+    failed = 0
+    with (
+        progress_stage("Loading symbols into Postgres", total=len(symbols), unit="symbols") as bar,
+        ThreadPoolExecutor(max_workers=cfg.max_workers) as pool,
+    ):
         futures = {
             pool.submit(
-                _process_symbol, s, bhav_files, spot_price_map, daily_rate, earnings_map, cfg, cache
+                _process_symbol, s, bhav_files, spot_price_map, daily_rate, earnings_map,
+                cfg, cache,
             ): s
             for s in symbols
         }
@@ -461,7 +467,12 @@ def main(settings_: Settings | None = None) -> None:
             try:
                 fut.result()
             except Exception as exc:
+                failed += 1
                 logger.exception("worker for %s failed: %s", sym, exc)
+            bar.advance(label=f"{sym}{f'  failed={failed}' if failed else ''}")
+
+    if failed:
+        logger.warning("ETL finished with %d/%d symbols failed", failed, len(symbols))
 
     # ───────── graceful pool shutdown ─────────
     close_db_pool()

@@ -11,7 +11,7 @@ import io
 import logging
 import time
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -22,6 +22,9 @@ from dateutil.relativedelta import relativedelta
 
 from mktmtm.config.settings import settings
 from mktmtm.data.symbols import load_target_symbols
+from mktmtm.progress import progress_stage, track
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "UDIFF_CUTOFF_DATE",
@@ -142,7 +145,10 @@ def build_bhavcopy_cache(bhavcopy_dir: Path, out_path: Path) -> Path:
     writer: pq.ParquetWriter | None = None
     n_files = skipped = 0
     first = True
-    for fp in sorted(Path(bhavcopy_dir).glob("*.csv")):
+    csv_files = sorted(Path(bhavcopy_dir).glob("*.csv"))
+    for fp in track(
+        csv_files, "Building bhavcopy cache", unit="files", label=lambda p: p.name
+    ):
         date_obj = parse_bhavcopy_date(fp.name)
         if date_obj is None:
             continue
@@ -334,14 +340,29 @@ def run_pipeline(
     with suppress(Exception):
         session.get("https://www.nseindia.com", headers=session.headers, timeout=20)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        results = list(
-            executor.map(
-                lambda d: download_and_process_bhavcopy(
-                    d, session, target_symbols, extracted_dir, filtered_dir
-                ),
-                dates,
-            )
-        )
+    # as_completed rather than executor.map: map yields in submission order, so a
+    # single slow day would stall the bar while later days quietly finished.
+    ok = 0
+    with (
+        progress_stage("Downloading bhavcopy", total=len(dates), unit="days") as bar,
+        ThreadPoolExecutor(max_workers=max_workers) as executor,
+    ):
+        futures = {
+            executor.submit(
+                download_and_process_bhavcopy,
+                d, session, target_symbols, extracted_dir, filtered_dir,
+            ): d
+            for d in dates
+        }
+        for future in as_completed(futures):
+            day = futures[future]
+            try:
+                got = future.result()
+            except Exception:
+                logger.exception("Bhavcopy download failed for %s", day.date())
+                got = False
+            ok += bool(got)
+            bar.advance(label=f"{day.strftime('%d %b %Y')}  ok={ok}")
 
-    return sum(1 for r in results if r)
+    logger.info("Bhavcopy: %d/%d weekdays had data (holidays return 404)", ok, len(dates))
+    return ok

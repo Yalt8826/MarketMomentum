@@ -36,6 +36,7 @@ from mktmtm.data.symbols import load_fno_symbols
 from mktmtm.options.chain import get_time_to_expiry_in_years, pick_strike_nearest_underlying
 from mktmtm.options.pricing import black_scholes_greeks, implied_volatility_bisection
 from mktmtm.options.volatility import compute_yz_rolling_vol
+from mktmtm.progress import track
 
 logger = logging.getLogger(__name__)
 
@@ -309,10 +310,17 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
     # 5) Process bhavcopy files ------------------------------------------- #
     daily_ohlc_map: dict[str, list[dict[str, Any]]] = {sym: [] for sym in symbols}
 
-    for file_path, date_obj in bhavcopy_files:
+    for file_path, date_obj in track(
+        bhavcopy_files,
+        "Enriching bhavcopy days",
+        unit="days",
+        label=lambda fd: fd[1].strftime("%d %b %Y"),
+    ):
         try:
             date_key = date_obj.strftime("%d-%b-%Y")
-            logger.info("Processing %s => %s", file_path.name, date_key)
+            # debug, not info: the progress bar already names the current day, and
+            # at 2500 days this line alone would be 2500 lines of noise.
+            logger.debug("Processing %s => %s", file_path.name, date_key)
 
             fallback_rate = get_rate_with_fallback(date_obj.date(), daily_interest_map)
             r_decimal = (fallback_rate / 100.0) if fallback_rate else 0.0
@@ -554,7 +562,7 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
             logger.warning("Error processing %s: %s", file_path, exc)
 
     # 6) Rolling Yang-Zhang realized vol per symbol ------------------------ #
-    for symbol in symbols:
+    for symbol in track(symbols, "Computing Yang-Zhang RV", unit="symbols", label=str):
         rows = daily_ohlc_map[symbol]
         if not rows:
             continue
@@ -571,8 +579,8 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
             if date_key in timestamps:
                 timestamps[date_key]["rv_yz"] = float(yz_val) if np.isfinite(yz_val) else None
 
-    # 7) Rolling 30-day IV percentile & rank (CE + PE) --------------------- #
-    for symbol in symbols:
+    # 7) Rolling IV percentile & rank (CE + PE) ---------------------------- #
+    for symbol in track(symbols, "Computing IV percentile/rank", unit="symbols", label=str):
         time_map = result["historical"]["scripts"][symbol]["timestamps"]
         if not time_map:
             continue
@@ -604,7 +612,7 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                 time_map[d_str][side]["ivr"] = (float(rnk) * 100.0) if rnk is not None else None
 
     # 8) Sort timestamps by date + NaN/Inf scrub --------------------------- #
-    for symbol in symbols:
+    for symbol in track(symbols, "Sorting + scrubbing", unit="symbols", label=str):
         time_map = result["historical"]["scripts"][symbol]["timestamps"]
         if not time_map:
             continue

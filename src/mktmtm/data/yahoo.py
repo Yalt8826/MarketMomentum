@@ -22,6 +22,7 @@ import requests
 
 from mktmtm.config.settings import settings
 from mktmtm.data.symbols import load_fno_symbols
+from mktmtm.progress import track
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,9 @@ def download_yahoo_prices(
         session.get("https://finance.yahoo.com", timeout=10)
 
     processed_count = 0
-    for symbol in symbols:
+    for symbol in track(
+        symbols, "Downloading Yahoo closes", unit="symbols", label=lambda s: str(s)
+    ):
         item_meta = symbols_meta.get(symbol, {})
         ticker = resolve_yahoo_ticker(symbol, item_meta)
 
