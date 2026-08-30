@@ -6,6 +6,7 @@ Ported verbatim from the athena-verified `process_data.py` pipeline
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from typing import Any
 
@@ -17,6 +18,7 @@ __all__ = [
     "pick_strike_nearest_underlying",
     "get_time_to_expiry_in_years",
     "get_option_expiry",
+    "unadjusted_spot_from_bhavcopy",
 ]
 
 
@@ -117,6 +119,58 @@ def get_time_to_expiry_in_years(date_key: str, expiry_str: str) -> float:
 
     # Approx with days in a year:
     return days_to_expiry / 365.0
+
+
+def unadjusted_spot_from_bhavcopy(
+    df_sym: pd.DataFrame,
+    fut: pd.DataFrame,
+    date_key: str,
+    r_dec: float,
+) -> tuple[float, str] | None:
+    """Spot on the same corporate-action basis as the bhavcopy strikes.
+
+    NSE bhavcopy strikes and settles are *traded* (unadjusted) values, so the
+    spot driving ATM-strike selection, IV and Greeks has to be unadjusted too.
+    Yahoo cannot supply that: ``quote.close`` is already restated for splits and
+    bonuses — only the *dividend* adjustment separates it from ``adjclose`` — so
+    before a corporate action it is off by the split factor. Measured against
+    the NSE futures close on 2021-08-02: KOTAKBANK 5.05x, NESTLEIND 20.42x,
+    RELIANCE 2.19x. That mismatch picks the ATM strike from the wrong region of
+    the chain and collapses IV (docs/data/iv-integrity-audit.md).
+
+    Sources, in precedence order:
+
+    1. ``UNDERLYING_PRICE`` — NSE's own underlying value, present in UDiFF files
+       (post 2024-07-08) as ``UndrlygPric``.
+    2. Near-month futures close discounted by carry, ``S = F * exp(-r*T)`` — the
+       legacy era has no underlying column, and the futures close is the only
+       unadjusted underlying proxy in the file.
+
+    ``fut`` must hold futures rows only (``FUTSTK``/``FUTIDX``), sorted by
+    expiry, with ``EXPIRY_DT`` already parsed to datetimes.
+
+    Returns ``(spot, source)``, or None when neither source yields a usable
+    price — callers skip the day rather than fall back to an adjusted price.
+    """
+    if "UNDERLYING_PRICE" in df_sym.columns:
+        vals = pd.to_numeric(df_sym["UNDERLYING_PRICE"], errors="coerce").to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals) & (vals > 0)]
+        if len(vals):
+            return float(vals[0]), "undrlyg"
+
+    if not fut.empty:
+        fr = fut.iloc[0]
+        try:
+            f_close = float(fr["CLOSE"])
+        except (TypeError, ValueError):
+            return None
+        expiry = fr["EXPIRY_DT"]
+        if np.isfinite(f_close) and f_close > 0 and pd.notna(expiry):
+            t_fut = get_time_to_expiry_in_years(
+                date_key, pd.Timestamp(expiry).strftime("%d-%b-%Y")
+            )
+            return float(f_close * math.exp(-r_dec * max(t_fut, 0.0))), "futures"
+    return None
 
 
 def get_option_expiry(option_row: pd.Series[Any]) -> str | None:

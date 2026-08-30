@@ -56,6 +56,10 @@ UDIFF_COLUMN_MAP: dict[str, str] = {
     "TtlTradgVol": "CONTRACTS",
     "OpnIntrst": "OPEN_INT",
     "ChngInOpnIntrst": "CHG_IN_OI",
+    # NSE's own underlying value, on the same unadjusted basis as the strikes.
+    # Legacy-era files have no equivalent column; the ETL falls back to the
+    # near-month futures close there (see storage.etl._unadjusted_spot).
+    "UndrlygPric": "UNDERLYING_PRICE",
 }
 
 # UDiFF instrument-type codes -> legacy codes
@@ -121,7 +125,7 @@ def normalize_bhavcopy_columns(df: pd.DataFrame) -> pd.DataFrame:
 _CACHE_COLUMNS = [
     "INSTRUMENT", "SYMBOL", "EXPIRY_DT", "STRIKE_PR", "OPTION_TYP",
     "OPEN", "HIGH", "LOW", "CLOSE", "SETTLE_PR", "CONTRACTS",
-    "OPEN_INT", "CHG_IN_OI",
+    "OPEN_INT", "CHG_IN_OI", "UNDERLYING_PRICE",
 ]
 
 

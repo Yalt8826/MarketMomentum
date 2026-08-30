@@ -121,9 +121,12 @@ def test_pipeline_produces_populated_nifty_timestamp(pipeline_settings: Settings
         assert block["volume"] > 0
         assert set(block["greeks"]) == {"delta", "gamma", "theta", "vega", "rho"}
 
-    # Single day -> YZ can't warm up; rolling ivp/ivr still computed.
+    # Single day -> YZ can't warm up, and the 252-day IV window needs at least
+    # _IV_MIN_PERIODS (60) observations behind a point before it will report a
+    # percentile. One day is not a percentile of anything, so both are None
+    # rather than the degenerate 100.0 the old 30-day window produced.
     assert rec["rv_yz"] is None
-    assert rec["ce"]["ivp"] == pytest.approx(100.0)
+    assert rec["ce"]["ivp"] is None
     assert rec["ce"]["ivr"] is None
 
     # Every symbol from the catalog is present; no NaN/Inf anywhere.

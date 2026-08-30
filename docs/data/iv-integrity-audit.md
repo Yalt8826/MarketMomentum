@@ -162,3 +162,85 @@ IV now agree to ~2 vol points, confirming the strike-mismatch was the root cause
 and that **futures-basis repricing is NOT needed**.
 
 **Report author:** praxis, 2026-08-30 — verified live, all counts reproducible.
+
+---
+
+## 7. Five-year build audit (2026-08-31) — two further defects
+
+The full five-year run completed and `scripts/verify_db_health.py` returned
+**PASS**, but the build was not trainable. Two defects, both invisible to the
+gate as it stood.
+
+### F8 — the ETL cache offset map silently dropped 75 of 222 symbols
+
+`build_bhavcopy_cache` writes the text columns as pandas `category` (dictionary
+encoding keeps the 881 MB cache small), and each of the 1,254 row groups carries
+its own dictionary. Reading that back gives a Categorical whose categories follow
+first-appearance order across row groups — **not** alphabetical. `_load_cache`
+then did `sort_values(["SYMBOL","DATE"])`, which orders by *category code*, and
+fed the result to `np.searchsorted`, which is only defined on a sorted array.
+
+Reproduced against the real cache:
+
+| Span outcome | Symbols |
+|---|---|
+| Correct | 144 |
+| Empty → symbol silently dropped | **75** |
+| Wrong → span holds other symbols' rows | **3** |
+
+| Symbol | True rows | Rows the ETL read | Of which its own | Foreign symbols pulled in |
+|---|---|---|---|---|
+| TATASTEEL | 306,540 | 36,985 | **0** | ATHERENERG, GVT&D, MAHABANK, NIFTYFPI |
+| TATAPOWER | 251,413 | 227,602 | **0** | ADANIPOWER, BAJAJHLDNG, COCHINSHIP |
+| TATAMOTORS | 232,916 | 9,871,526 | 232,916 | 360ONE, ADANIENSOL, AMBER |
+
+TATASTEEL's 103 delivered rows were built entirely from *other companies'*
+option chains. `option_metrics` held 143 symbols / 169,974 rows against the
+217 / 212,479 of the previous build.
+
+**Fix:** cast `SYMBOL` to `str` before sorting, assert the array is sorted before
+`searchsorted`, and assert each slice holds only its own symbol. `_process_symbol`
+now returns its row count so `main` can name zero-row symbols at WARNING.
+
+### F9 — Yahoo's "raw" close is still split/bonus-adjusted, so F2/F3 was incomplete
+
+`quote.close` differs from `adjclose` only by the **dividend** adjustment; both
+are restated for splits and bonuses. Storing `quote.close` as
+`underlying_price_raw` therefore removed the wrong adjustment, and the
+strike-vs-spot basis mismatch survived for any history preceding a corporate
+action. Against the genuinely unadjusted NSE futures close on 2021-08-02:
+
+| Symbol | Stored "raw" spot | NSE FUT close | Ratio |
+|---|---|---|---|
+| RELIANCE | 956.46 | 2,093.40 | 2.19x |
+| KOTAKBANK | 333.02 | 1,680.40 | 5.05x |
+| NESTLEIND | 885.73 | 18,084.85 | 20.42x |
+| ITC (no split) | 199.61 | 209.50 | 1.05x |
+
+The original monotone-decay-backward signature was intact — `|strike/spot−1|>10%`
+on 18.12% of 2021 rows decaying to 0.63% in 2026, and usable `ce_iv_30` rising
+from 72.1% (2021) to 93.0% (2026), 82.3% overall. The gate missed it because F1
+now turns bad IVs into `NULL`, and its hygiene test only counted
+`ce_iv_30 <= 0 OR > 200` — `NULL` matches neither.
+
+**Fix:** `options.chain.unadjusted_spot_from_bhavcopy` takes spot from the
+bhavcopy itself, so spot and strikes share one basis by construction:
+
+1. `UNDERLYING_PRICE` (UDiFF `UndrlygPric`, post 2024-07-08) — NSE's own value;
+2. near-month futures close discounted by carry, `S = F·exp(−rT)` — legacy era.
+
+Yahoo `adjclose` still supplies `underlying_price_adj` for returns and labels;
+that part was always correct. Verified on real files from both eras: the derived
+spot lands within 2% of an actually-traded strike in every case
+(KOTAKBANK 2021 → 1,660.4; NESTLEIND 2021 → 17,689.6; RELIANCE 2021 → 2,067.7).
+
+### Gate changes
+
+`verify_db_health.py` now **fails** on catalog symbols missing from
+`option_metrics`, counts `ce_iv_30 IS NULL` as unusable alongside the
+out-of-range test (per year), and fails when `|strike/spot−1| > 10%` on more
+than 2% of rows. Either defect above would have been caught by these.
+
+**Both fixes require a full ETL re-run** — strike, chain, IV and Greeks are baked
+into `option_metrics` at ETL time. The cache must also be rebuilt, since
+`UNDERLYING_PRICE` is a new column.

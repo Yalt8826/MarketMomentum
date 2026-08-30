@@ -33,7 +33,11 @@ from mktmtm.data.bhavcopy import normalize_bhavcopy_columns, parse_bhavcopy_date
 from mktmtm.data.earnings import get_upcoming_earning_date, load_earnings_dates
 from mktmtm.data.rates import get_rate_with_fallback, load_interest_rates
 from mktmtm.data.symbols import load_fno_symbols
-from mktmtm.options.chain import get_time_to_expiry_in_years, pick_strike_nearest_underlying
+from mktmtm.options.chain import (
+    get_time_to_expiry_in_years,
+    pick_strike_nearest_underlying,
+    unadjusted_spot_from_bhavcopy,
+)
 from mktmtm.options.pricing import black_scholes_greeks, implied_volatility_bisection
 from mktmtm.options.volatility import compute_yz_rolling_vol
 from mktmtm.progress import track
@@ -386,9 +390,23 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                 spot_rec = spot_price_map.get(symbol, {}).get(date_key)
                 if spot_rec is None:
                     continue
-                spot_price = spot_rec["raw"]  # unadjusted — strike/IV basis
+                # Yahoo supplies only the *adjusted* basis (for returns/labels);
+                # the strike/IV basis has to come from the bhavcopy itself, or a
+                # split turns the ATM strike into a number from the wrong region
+                # of the chain. Must stay in step with storage.etl.
                 spot_adj = spot_rec["adjusted"]
-                if not np.isfinite(spot_price) or not np.isfinite(spot_adj):
+                if not np.isfinite(spot_adj):
+                    continue
+                fut_only = futures_data[
+                    futures_data["INSTRUMENT"].isin(["FUTSTK", "FUTIDX"])
+                ]
+                picked_spot = unadjusted_spot_from_bhavcopy(
+                    symbol_data, fut_only, date_key, r_decimal
+                )
+                if picked_spot is None:
+                    continue
+                spot_price = picked_spot[0]
+                if not np.isfinite(spot_price) or spot_price <= 0:
                     continue
 
                 timestamps = result["historical"]["scripts"][symbol]["timestamps"]

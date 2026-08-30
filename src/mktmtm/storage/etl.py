@@ -16,6 +16,7 @@ bhavcopy file.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import suppress
@@ -35,6 +36,7 @@ from mktmtm.data.symbols import load_fno_symbols
 from mktmtm.options.chain import (
     get_time_to_expiry_in_years,
     pick_strike_nearest_underlying,
+    unadjusted_spot_from_bhavcopy,
 )
 from mktmtm.options.pricing import black_scholes_greeks, implied_volatility_bisection
 from mktmtm.options.volatility import compute_yz_rolling_vol
@@ -109,17 +111,38 @@ def _load_cache(cache_path: Path) -> tuple[pd.DataFrame, dict[str, tuple[int, in
     stop)}`` position map built with ``searchsorted`` (no data copy). Per-symbol
     slices are ``df.iloc[start:stop]`` — one copy of each symbol's rows, fast and
     memory-light. Peak RSS stays near one frame (~9 GB) instead of two.
+
+    NOTE on the SYMBOL dtype: ``build_bhavcopy_cache`` writes the text columns
+    as pandas ``category`` (dictionary-encoded parquet keeps the cache small),
+    and each row group carries its own dictionary. Reading that back yields a
+    Categorical whose categories follow first-appearance order across the 1,254
+    row groups — *not* alphabetical order. ``sort_values`` would then order rows
+    by category code, leaving ``sym_col`` unsorted for ``np.searchsorted``,
+    which silently returns nonsense spans: in the 2026-08-30 five-year build 75
+    of 222 symbols got empty spans and were dropped, and TATASTEEL / TATAPOWER /
+    TATAMOTORS got spans holding *other symbols'* rows. Casting to ``str``
+    before the sort keeps the sort order and the search order in agreement; the
+    assertion below makes any future regression loud instead of silent.
     """
     if not cache_path.exists():
         return None
     df = pd.read_parquet(cache_path)
+    df["SYMBOL"] = df["SYMBOL"].astype(str)
     df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
-    df = df.sort_values(["SYMBOL", "DATE"]).reset_index(drop=True)
+    df = df.sort_values(["SYMBOL", "DATE"], kind="stable").reset_index(drop=True)
     sym_col = df["SYMBOL"].to_numpy()
+    if len(sym_col) > 1 and not bool(np.all(sym_col[:-1] <= sym_col[1:])):
+        raise ValueError(
+            "bhavcopy cache is not sorted by SYMBOL after sort_values — "
+            "searchsorted offsets would be garbage (silently dropping symbols). "
+            "Check the SYMBOL dtype coming out of the parquet."
+        )
     syms = pd.unique(sym_col)
     starts = np.searchsorted(sym_col, syms, side="left")
     ends = np.searchsorted(sym_col, syms, side="right")
-    offsets = {str(s): (int(st), int(en)) for s, st, en in zip(syms, starts, ends)}
+    offsets = {
+        str(s): (int(st), int(en)) for s, st, en in zip(syms, starts, ends, strict=True)
+    }
     logger.info("bhavcopy cache: %d rows, %d symbols (%s)", len(df), len(offsets), cache_path)
     return df, offsets
 
@@ -137,6 +160,15 @@ def _iter_symbol_days(
             return
         start, stop = span
         sub = df.iloc[start:stop]
+        # Post-condition on the offset map: a slice must hold this symbol and
+        # nothing else. A bad map is otherwise invisible — the worker just
+        # produces rows built from another symbol's option chain.
+        if not sub.empty and not bool((sub["SYMBOL"] == sym).all()):
+            foreign = sorted(set(sub["SYMBOL"].unique()) - {sym})[:5]
+            raise ValueError(
+                f"cache slice for {sym} [{start}:{stop}] contains foreign symbols "
+                f"{foreign} — the offset map is corrupt, refusing to write mixed data"
+            )
         for date_obj in sub["DATE"].unique():
             yield date_obj, sub[sub["DATE"] == date_obj]
         return
@@ -212,15 +244,19 @@ def _iv_stats(
 def _process_symbol(
     sym: str,
     bhav_files: list[Path],
-    spot_price_map: dict[str, dict[str, float]],
+    # {symbol: {date_key: {"adjusted": float, "raw": float}}} — see
+    # pipeline.process.load_spot_prices. Only "adjusted" is consumed here; the
+    # strike/IV basis comes from the bhavcopy (unadjusted_spot_from_bhavcopy).
+    spot_price_map: dict[str, dict[str, dict[str, float]]],
     daily_rate: Mapping[date, float],
     earnings_map: dict[str, list[date]],
     cfg: Settings,
     cache: tuple[pd.DataFrame, dict[str, tuple[int, int]]] | None = None,
-) -> None:
+) -> int:
     logger.debug("┌─ processing %-10s", sym)
     time_map: dict[str, dict[str, Any]] = {}
     daily_ohlc: list[dict[str, Any]] = []
+    spot_sources: Counter[str] = Counter()
 
     for date_obj, df_sym in _iter_symbol_days(sym, bhav_files, cache):
         date_key = date_obj.strftime("%d-%b-%Y")
@@ -231,19 +267,17 @@ def _process_symbol(
         spot_rec = spot_price_map.get(sym, {}).get(date_key)
         if spot_rec is None:
             continue
-        # Raw (unadjusted) close is the correct basis for ATM-strike selection
-        # and IV/Greeks — it shares the corporate-action basis of NSE bhavcopy
-        # strikes/settles (see docs/data/iv-integrity-audit.md).
-        spot_raw = spot_rec["raw"]
-        # Adjusted close is stored separately for returns/labels in ml_dataset.
+        # Yahoo's adjusted close is kept only for returns/labels in ml_dataset;
+        # it is corporate-action-continuous, which is exactly what a return
+        # series needs and exactly what strike matching must not use.
         spot_adj = spot_rec["adjusted"]
-        if not np.isfinite(spot_raw) or not np.isfinite(spot_adj):
+        if not np.isfinite(spot_adj):
             continue
 
         rate = get_rate_with_fallback(date_obj.date(), daily_rate)
         r_dec = (rate or 0) / 100.0
 
-        # ───────── FUTURES (for OHLC + expiries) ─────────
+        # ───────── FUTURES (for OHLC + expiries + spot basis) ─────────
         fut = df_sym[df_sym["INSTRUMENT"].isin(["FUTSTK", "FUTIDX"])].copy()
         if not fut.empty:
             fut["EXPIRY_DT"] = pd.to_datetime(
@@ -260,6 +294,15 @@ def _process_symbol(
                     Close=float(fr["CLOSE"]),
                 )
             )
+
+        # Unadjusted spot, from the bhavcopy itself — never from Yahoo.
+        picked_spot = unadjusted_spot_from_bhavcopy(df_sym, fut, date_key, r_dec)
+        if picked_spot is None:
+            continue
+        spot_raw, spot_source = picked_spot
+        if not np.isfinite(spot_raw) or spot_raw <= 0:
+            continue
+        spot_sources[spot_source] += 1
 
         rec = time_map.setdefault(
             date_key,
@@ -467,13 +510,17 @@ def _process_symbol(
 
     # ───────── write to DB ─────────
     if time_map:
-        logger.debug("--> building %s rows for %s, writing to DB ...", len(time_map), sym)
+        logger.debug(
+            "--> building %s rows for %s (spot: %s), writing to DB ...",
+            len(time_map), sym, dict(spot_sources),
+        )
         with DBWriter(cfg) as w:
             for d_str, payload in time_map.items():
                 w.write_row(sym, d_str, payload)
         logger.debug("└─ %s rows stored for %s", len(time_map), sym)
     else:
         logger.debug("└─ no data rows for %s", sym)
+    return len(time_map)
 
 
 # ═════════════════════════ orchestrator ════════════════════════════════════
@@ -501,6 +548,7 @@ def main(settings_: Settings | None = None) -> None:
 
     # ───────── threaded execution ─────────
     failed = 0
+    empty: list[str] = []
     with (
         progress_stage("Loading symbols into Postgres", total=len(symbols), unit="symbols") as bar,
         ThreadPoolExecutor(max_workers=cfg.max_workers) as pool,
@@ -515,7 +563,8 @@ def main(settings_: Settings | None = None) -> None:
         for fut in as_completed(futures):
             sym = futures[fut]
             try:
-                fut.result()
+                if fut.result() == 0:
+                    empty.append(sym)
             except Exception as exc:
                 failed += 1
                 logger.exception("worker for %s failed: %s", sym, exc)
@@ -523,6 +572,17 @@ def main(settings_: Settings | None = None) -> None:
 
     if failed:
         logger.warning("ETL finished with %d/%d symbols failed", failed, len(symbols))
+    # A symbol that writes nothing used to be a debug line, which is how 75
+    # silently dropped symbols survived a full five-year run and a green health
+    # gate. Name them at WARNING so the next run cannot hide the same failure.
+    if empty:
+        logger.warning(
+            "ETL wrote 0 rows for %d/%d symbols: %s",
+            len(empty), len(symbols), ", ".join(sorted(empty)),
+        )
+    logger.info(
+        "ETL wrote rows for %d/%d symbols", len(symbols) - failed - len(empty), len(symbols)
+    )
 
     # ───────── graceful pool shutdown ─────────
     close_db_pool()

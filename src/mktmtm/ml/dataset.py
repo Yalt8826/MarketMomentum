@@ -254,6 +254,14 @@ def compute_chain_aggregates(
     df = _read_sql(conn, sql, params)
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        # psycopg2 maps SUM(bigint)/AVG() to decimal.Decimal, which lands as an
+        # object column and propagates through every ratio derived from it
+        # (chain_volume, chain_oi, chain_oi_chg, chain_breadth,
+        # put_call_vol_ratio, put_call_oi_ratio). Estimators either reject those
+        # or silently object-ify the frame, so pin them to float here.
+        for col in df.columns:
+            if col not in ("symbol", "date"):
+                df[col] = pd.to_numeric(df[col], errors="coerce")
     return df
 
 

@@ -14,6 +14,7 @@ import pandas as pd
 import psycopg2
 
 from mktmtm.config.settings import settings
+from mktmtm.data.symbols import load_fno_symbols
 from mktmtm.storage.db import build_dsn
 
 fail = False
@@ -58,6 +59,20 @@ if q("SELECT count(*) FROM option_metrics WHERE underlying_price IS NULL")[0][0]
 else:
     ok("no missing spot prices")
 
+# Catalog coverage. The 2026-08-30 build silently lost 75 of 222 symbols to a
+# corrupt cache offset map and still passed every check above, because nothing
+# compared the loaded symbols against the catalog they were supposed to come from.
+catalog = set(load_fno_symbols())
+loaded = {r[0] for r in q("SELECT DISTINCT symbol FROM option_metrics")}
+absent = sorted(catalog - loaded)
+if absent:
+    bad(
+        f"{len(absent)}/{len(catalog)} catalog symbols absent from option_metrics: "
+        f"{', '.join(absent[:12])}{' ...' if len(absent) > 12 else ''}"
+    )
+else:
+    ok(f"all {len(catalog)} catalog symbols present")
+
 print("\n" + "=" * 70)
 print("2) ML_DATASET (targets + coverage)")
 print("=" * 70)
@@ -97,13 +112,43 @@ print("\n" + "=" * 70)
 print("4) HYGIENE (training-loader concerns, not gate failures)")
 print("=" * 70)
 total = mrows
-garbage = q("SELECT count(*) FROM ml_dataset WHERE ce_iv_30 <= 0 OR ce_iv_30 > 200")[0][0]
-print(f"  garbage ce_iv_30 (<=0 or >200): {garbage:,} ({100.0*garbage/total:.1f}%) — filter: keep 0 < ce_iv_30 <= 200")
-for y, g, t in q(
-    "SELECT extract(year from date)::int, count(*) FILTER (WHERE ce_iv_30 <= 0 OR ce_iv_30 > 200), count(*) "
+# NULL counts here, not just out-of-range: once the IV solver returns None
+# instead of 0.0/500.0 sentinels, corruption shows up as NULL and an
+# "ce_iv_30 <= 0 OR > 200" test sees a clean table that is 18% unusable.
+garbage = q("SELECT count(*) FROM ml_dataset WHERE ce_iv_30 IS NULL OR ce_iv_30 <= 0 OR ce_iv_30 > 200")[0][0]
+print(f"  unusable ce_iv_30 (NULL, <=0 or >200): {garbage:,} ({100.0*garbage/total:.1f}%) — filter: keep 0 < ce_iv_30 <= 200")
+print(f"      {'year':6s}{'unusable':>18s}{'of which NULL':>16s}")
+for y, g, nul, t in q(
+    "SELECT extract(year from date)::int, "
+    "count(*) FILTER (WHERE ce_iv_30 IS NULL OR ce_iv_30 <= 0 OR ce_iv_30 > 200), "
+    "count(*) FILTER (WHERE ce_iv_30 IS NULL), count(*) "
     "FROM ml_dataset GROUP BY 1 ORDER BY 1"
 ):
-    print(f"      {y}: {g:>6,}/{t:>6,} ({100.0*g/t:4.1f}%)")
+    print(f"      {y:<6d}{g:>8,}/{t:>7,} ({100.0*g/t:4.1f}%){nul:>10,} ({100.0*nul/t:4.1f}%)")
+
+# Strike-vs-spot agreement is the direct read on whether spot and the strikes
+# share a corporate-action basis. A monotone decay backwards through time is the
+# signature of an adjusted price series being matched to unadjusted strikes.
+print()
+dev = q(
+    "SELECT round((count(*) FILTER (WHERE abs(strike_price/nullif(underlying_price,0)-1) > 0.10))"
+    "::numeric / count(*)::numeric, 4) FROM option_metrics WHERE strike_price IS NOT NULL"
+)[0][0]
+print(f"  |strike/spot - 1| > 10%: {float(dev):.2%} overall (price-basis mismatch indicator)")
+for y, f in q(
+    "SELECT extract(year from date)::int, "
+    "round((count(*) FILTER (WHERE abs(strike_price/nullif(underlying_price,0)-1) > 0.10))"
+    "::numeric / count(*)::numeric, 4) "
+    "FROM option_metrics WHERE strike_price IS NOT NULL GROUP BY 1 ORDER BY 1"
+):
+    print(f"      {y}: {float(f):6.2%}")
+if float(dev) > 0.02:
+    bad(
+        f"strike/spot mismatch on {float(dev):.2%} of rows (>2%) — spot and strikes are "
+        f"not on the same corporate-action basis; check storage.etl._unadjusted_spot"
+    )
+else:
+    ok("strike and spot share one corporate-action basis")
 outliers = q("SELECT count(*) FROM ml_dataset WHERE abs(next_day_return) > 0.30")[0][0]
 print(f"  |next_day_return| > 0.30: {outliers:,} (0 = corporate-action fix working)")
 for col in ("skew_25d", "ce_ivr", "ce_ivp", "days_to_earnings"):
