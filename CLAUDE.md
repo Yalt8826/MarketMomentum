@@ -112,6 +112,8 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 ### Docs
 
 `docs/data/iv-integrity-audit.md` (price-basis and IV-solver defects + verified fixes),
+`docs/data/etl-integrity-change-report.md` (five-year build audit: the cache offset-map
+and spot-basis defects, the change set, re-run procedure and acceptance criteria),
 `docs/data/ml-dataset-report.md` (feature analysis, look-ahead incident),
 `docs/database/README.md` (full schema, JSONB shapes, write paths),
 `docs/backtest/` (strategy design), `docs/reference/` (NSE formula PDF).
