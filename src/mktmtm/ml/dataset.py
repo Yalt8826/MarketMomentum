@@ -210,11 +210,17 @@ def _load_base(conn: Any, symbols: list[str] | None, limit_dates: int | None) ->
     # groupby().pct_change(), which trusts row order. Without it Postgres returns
     # heap order and the returns come out scrambled (silently, and differently on
     # each rebuild). See docs/data/ml-dataset-report.md §2.
+    #
+    # Momentum/returns/labels must be computed from the *adjusted* close
+    # (corporate-action-clean); the raw close is used only for strike/IV at ETL
+    # time and for the chain-aggregate nearest-strike lookups (which read
+    # option_metrics.underlying_price directly in SQL). See
+    # docs/data/iv-integrity-audit.md.
     sql = (
-        "SELECT symbol, date, underlying_price, interest_rate, rv_yz, "
+        "SELECT symbol, date, underlying_price_adj AS underlying_price, interest_rate, rv_yz, "
         "expiry_30d, expiry_60d, expiry_90d, upcoming_earning_date, ce, pe "
         "FROM option_metrics"
-        + (" WHERE " + " AND ".join(where) if where else "")
+        + (f" WHERE {' AND '.join(where)}" if where else "")
         + " ORDER BY symbol, date"
     )
     df = _read_sql(conn, sql, params)

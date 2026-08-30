@@ -128,7 +128,7 @@ def implied_volatility_bisection(
     upper_bound: float = 5.0,
     tol: float = 1e-8,
     max_iter: int = 500,
-) -> float:
+) -> float | None:
     """Finds implied volatility using a simple bisection method on Black-Scholes price.
 
     market_price: observed option price (premium)
@@ -138,10 +138,16 @@ def implied_volatility_bisection(
     r  : Risk-free rate (decimal)
     is_call : True for Call, False for Put
     q  : Dividend yield (decimal)
+
+    Returns ``None`` (not a sentinel like 0.0 or 500%) when no meaningful IV
+    exists: ``T <= 0``, ``market_price <= intrinsic`` (no time value), or the
+    bisection fails to converge within ``[lower_bound, upper_bound]``. A None
+    propagates as SQL NULL so downstream consumers can drop it rather than
+    train on a fabricated vol.
     """
     intrinsic = max(0.0, (S - K) if is_call else (K - S))
     if T <= 0 or market_price <= intrinsic:
-        return 0.0
+        return None
 
     for _ in range(max_iter):
         mid_vol = 0.5 * (lower_bound + upper_bound)
@@ -155,4 +161,9 @@ def implied_volatility_bisection(
         else:
             lower_bound = mid_vol
 
-    return 0.5 * (lower_bound + upper_bound)
+    # Non-convergence: the observed price is outside the range reachable by any
+    # IV in [lower_bound, upper_bound] (e.g. deep-ITM premium priced below its
+    # intrinsic after a strike/spot mismatch). Returning the bracket midpoint
+    # fabricates a 500% vol; return None instead so the row is droppable.
+    return None
+

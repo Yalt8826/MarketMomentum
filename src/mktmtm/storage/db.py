@@ -43,11 +43,12 @@ MAX_RETRY = 6
 # UPSERT statement – *execute_values* expands the VALUES part.
 _INSERT = (
     "INSERT INTO option_metrics ("
-    "symbol,date,underlying_price,interest_rate,strike_price,"
+    "symbol,date,underlying_price,underlying_price_adj,interest_rate,strike_price,"
     "expiry_30d,expiry_60d,expiry_90d,upcoming_earning_date,"
     "rv_yz,ce,pe,option_chain,extras) VALUES %s "
     "ON CONFLICT (symbol,date) DO UPDATE SET "
     "underlying_price       = EXCLUDED.underlying_price,"
+    "underlying_price_adj   = EXCLUDED.underlying_price_adj,"
     "interest_rate          = EXCLUDED.interest_rate,"
     "strike_price           = EXCLUDED.strike_price,"
     "expiry_30d             = EXCLUDED.expiry_30d,"
@@ -174,6 +175,7 @@ class DBWriter:
             sym,
             datetime.strptime(date_key, "%d-%b-%Y").date(),
             d.get("underlying_price"),
+            d.get("underlying_price_adj"),
             d.get("interest_rate"),
             d.get("strike_price"),
             _d(d.get("expiry_30d")),

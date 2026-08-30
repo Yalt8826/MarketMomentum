@@ -54,6 +54,15 @@ __all__ = [
 # Yang-Zhang rolling-vol parameters.
 WINDOW, MAX_LOOKBACK = 30, 90
 
+# Trailing window for IV percentile / rank, in trading days. One year (252) is
+# the standard; a 30-day window made ``ivp`` a 30-valued step function (min
+# 1/30 = 3.33%) and wasted information (process.py already uses 252 — this must
+# match, since etl is the path that actually writes the ML dataset). Rows with
+# fewer than ``_IV_MIN_PERIODS`` finite observations behind them get NULL rather
+# than a percentile computed off a handful of points.
+_IV_WINDOW = 252
+_IV_MIN_PERIODS = 60
+
 
 # ───────────────────────── helper utilities ────────────────────────────────
 def _safe_T(date_key: str, expiry: str | None) -> float:
@@ -84,34 +93,50 @@ def _load_bhavcopy(fp: Path) -> pd.DataFrame | None:
     return None
 
 
-def _load_cache(cache_path: Path) -> dict[str, pd.DataFrame] | None:
-    """Symbol-indexed bhavcopy parquet cache, or None when absent.
+def _load_cache(cache_path: Path) -> tuple[pd.DataFrame, dict[str, tuple[int, int]]] | None:
+    """Load the bhavcopy parquet cache as a single DataFrame + per-symbol offsets.
 
     Built by ``mktmtm preparse-bhavcopy`` (see ``data/bhavcopy.build_bhavcopy_cache``).
-    Slicing per symbol from this cache replaces the per-symbol re-parse of
-    every CSV, cutting the ETL runtime by roughly 4x.
+    Slicing per symbol from this cache replaces the per-symbol re-parse of every
+    CSV, cutting ETL runtime by roughly 4x.
+
+    NOTE on memory: the cache is ~60M rows (1,254 trading days). Two earlier
+    versions OOM-killed the ETL on a 14 Gi host:
+      * a per-symbol dict of DataFrames duplicated every row in memory (12.5 GB peak);
+      * boolean-masking the whole frame per symbol was memory-safe but re-scanned
+        60M rows 222 times (impractically slow).
+    We therefore keep a *single* sorted DataFrame and a tiny ``{symbol: (start,
+    stop)}`` position map built with ``searchsorted`` (no data copy). Per-symbol
+    slices are ``df.iloc[start:stop]`` — one copy of each symbol's rows, fast and
+    memory-light. Peak RSS stays near one frame (~9 GB) instead of two.
     """
     if not cache_path.exists():
         return None
     df = pd.read_parquet(cache_path)
     df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
-    out: dict[str, pd.DataFrame] = {}
-    for sym, sub in df.groupby("SYMBOL", sort=False):
-        out[str(sym)] = sub.sort_values("DATE").reset_index(drop=True)
-    logger.info("bhavcopy cache: %d symbols, %d rows (%s)", len(out), len(df), cache_path)
-    return out or None
+    df = df.sort_values(["SYMBOL", "DATE"]).reset_index(drop=True)
+    sym_col = df["SYMBOL"].to_numpy()
+    syms = pd.unique(sym_col)
+    starts = np.searchsorted(sym_col, syms, side="left")
+    ends = np.searchsorted(sym_col, syms, side="right")
+    offsets = {str(s): (int(st), int(en)) for s, st, en in zip(syms, starts, ends)}
+    logger.info("bhavcopy cache: %d rows, %d symbols (%s)", len(df), len(offsets), cache_path)
+    return df, offsets
 
 
 def _iter_symbol_days(
     sym: str,
     bhav_files: list[Path],
-    cache: dict[str, pd.DataFrame] | None,
+    cache: tuple[pd.DataFrame, dict[str, tuple[int, int]]] | None,
 ) -> Iterator[tuple[datetime, pd.DataFrame]]:
     """Yield (trade_date, symbol_rows) from the parquet cache, else from CSVs."""
-    if cache:
-        sub = cache.get(sym)
-        if sub is None or sub.empty:
+    if cache is not None:
+        df, offsets = cache
+        span = offsets.get(sym)
+        if span is None:
             return
+        start, stop = span
+        sub = df.iloc[start:stop]
         for date_obj in sub["DATE"].unique():
             yield date_obj, sub[sub["DATE"] == date_obj]
         return
@@ -135,31 +160,47 @@ def _iv_safe(
     T: float,
     r: float,
     is_call: bool,
-) -> float:
-    """Implied vol helper that never raises & always returns pct."""
+) -> float | None:
+    """Implied vol helper that never raises; returns pct or None (no sentinels)."""
     try:
         iv = implied_volatility_bisection(market_price, S, K, T, r, is_call=is_call)
-        return iv * 100 if np.isfinite(iv) and iv > 0 else 0.0
     except Exception:
-        return 0.0
+        return None
+    if iv is None or not np.isfinite(iv) or iv <= 0:
+        return None
+    return iv * 100
 
 
 def _iv_stats(
     rows: list[tuple[datetime, float]],
 ) -> dict[Any, dict[str, float]]:
-    """Rolling 30-day IV percentile/rank over ``(datetime, iv)`` rows."""
-    if len(rows) < WINDOW:
+    """Rolling 252-day IV percentile/rank over ``(datetime, iv)`` rows.
+
+    Mirrors ``process.compute_rolling_iv_percentile_and_rank`` (same window and
+    min-periods), so etl and process produce identical ivp/ivr. Points with
+    fewer than ``_IV_MIN_PERIODS`` finite observations behind them are NULL, not
+    a percentile off a handful of points.
+    """
+    if len(rows) < _IV_MIN_PERIODS:
         return {}
     df = pd.DataFrame(rows, columns=["Date", "iv"]).dropna().sort_values("Date")
-    ivp: list[float] = []
+    iv_vals = df["iv"].to_numpy(dtype=float)
+    ivp: list[float | None] = []
     ivr: list[float | None] = []
-    for i, cur in enumerate(df["iv"]):
-        sub = df["iv"].iloc[max(0, i - WINDOW + 1) : i + 1]
-        pct = float((sub <= cur).sum() / len(sub))
+    for i in range(len(iv_vals)):
+        start = max(0, i - _IV_WINDOW + 1)
+        sub = iv_vals[start : i + 1]
+        sub = sub[np.isfinite(sub)]
+        cur = iv_vals[i]
+        if len(sub) < _IV_MIN_PERIODS or not np.isfinite(cur):
+            ivp.append(None)
+            ivr.append(None)
+            continue
+        pct = float(np.sum(sub <= cur) / len(sub))
         rng = float(sub.max() - sub.min())
-        rank = float((cur - sub.min()) / rng) if rng else None
-        ivp.append(pct * 100)
-        ivr.append(rank * 100 if rank is not None else None)
+        rank = float((cur - sub.min()) / rng) if rng > 0 else None
+        ivp.append(pct * 100.0)
+        ivr.append(rank * 100.0 if rank is not None else None)
     df["ivp"], df["ivr"] = ivp, ivr
     return cast(
         dict[Any, dict[str, float]],
@@ -175,7 +216,7 @@ def _process_symbol(
     daily_rate: Mapping[date, float],
     earnings_map: dict[str, list[date]],
     cfg: Settings,
-    cache: dict[str, pd.DataFrame] | None = None,
+    cache: tuple[pd.DataFrame, dict[str, tuple[int, int]]] | None = None,
 ) -> None:
     logger.debug("┌─ processing %-10s", sym)
     time_map: dict[str, dict[str, Any]] = {}
@@ -187,8 +228,16 @@ def _process_symbol(
         if len(time_map) % 100 == 0 and len(time_map) > 0:
             logger.debug("... %s rows accumulated for %s", len(time_map), sym)
 
-        spot = spot_price_map.get(sym, {}).get(date_key)
-        if spot is None or not np.isfinite(spot):
+        spot_rec = spot_price_map.get(sym, {}).get(date_key)
+        if spot_rec is None:
+            continue
+        # Raw (unadjusted) close is the correct basis for ATM-strike selection
+        # and IV/Greeks — it shares the corporate-action basis of NSE bhavcopy
+        # strikes/settles (see docs/data/iv-integrity-audit.md).
+        spot_raw = spot_rec["raw"]
+        # Adjusted close is stored separately for returns/labels in ml_dataset.
+        spot_adj = spot_rec["adjusted"]
+        if not np.isfinite(spot_raw) or not np.isfinite(spot_adj):
             continue
 
         rate = get_rate_with_fallback(date_obj.date(), daily_rate)
@@ -215,7 +264,8 @@ def _process_symbol(
         rec = time_map.setdefault(
             date_key,
             dict(
-                underlying_price=spot,
+                underlying_price=spot_raw,
+                underlying_price_adj=spot_adj,
                 interest_rate=rate,
                 upcoming_earning_date=None,
                 expiry_30d=None,
@@ -252,17 +302,17 @@ def _process_symbol(
             t_row = _safe_T(date_key, expiry)
             iv = _iv_safe(
                 market_price=float(row["SETTLE_PR"]),
-                S=float(spot),
+                S=float(spot_raw),
                 K=float(row["STRIKE_PR"]),
                 T=t_row,
                 r=r_dec,
                 is_call=(row["OPTION_TYP"] == "CE"),
             )
             delta = 0.0
-            if t_row > 0 and iv > 0:
+            if t_row > 0 and iv is not None and iv > 0:
                 with suppress(Exception):
                     delta = black_scholes_greeks(
-                        float(spot),
+                        float(spot_raw),
                         float(row["STRIKE_PR"]),
                         t_row,
                         r_dec,
@@ -288,7 +338,7 @@ def _process_symbol(
                 )
             )
 
-        picked = pick_strike_nearest_underlying(spot, opts)
+        picked = pick_strike_nearest_underlying(spot_raw, opts)
         if not picked:
             continue
         ce30, ce60, ce90, pe30, pe60, pe90, strike = picked
@@ -303,7 +353,7 @@ def _process_symbol(
 
         iv_ce30 = _iv_safe(
             market_price=float(ce30["SETTLE_PR"]),
-            S=float(spot),
+            S=float(spot_raw),
             K=float(strike),
             T=t_30,
             r=r_dec,
@@ -311,7 +361,7 @@ def _process_symbol(
         )
         iv_pe30 = _iv_safe(
             market_price=float(pe30["SETTLE_PR"]),
-            S=float(spot),
+            S=float(spot_raw),
             K=float(strike),
             T=t_30,
             r=r_dec,
@@ -322,11 +372,11 @@ def _process_symbol(
             iv_30=iv_ce30,
             iv_60=_iv_safe(
                 market_price=float(ce60["SETTLE_PR"]),
-                S=float(spot), K=float(strike), T=t_60, r=r_dec, is_call=True,
+                S=float(spot_raw), K=float(strike), T=t_60, r=r_dec, is_call=True,
             ),
             iv_90=_iv_safe(
                 market_price=float(ce90["SETTLE_PR"]),
-                S=float(spot), K=float(strike), T=t_90, r=r_dec, is_call=True,
+                S=float(spot_raw), K=float(strike), T=t_90, r=r_dec, is_call=True,
             ),
             volume=int(opts[opts["OPTION_TYP"] == "CE"]["CONTRACTS"].sum()),
             oi=_oi_int(ce30.get("OPEN_INT")),
@@ -338,7 +388,7 @@ def _process_symbol(
             ivp=None,
             ivr=None,
             greeks=black_scholes_greeks(
-                float(spot), float(strike), t_30, r_dec,
+                float(spot_raw), float(strike), t_30, r_dec,
                 iv_ce30 / 100 if iv_ce30 else 0.0, True,
             )
             if t_30 and iv_ce30
@@ -349,11 +399,11 @@ def _process_symbol(
             iv_30=iv_pe30,
             iv_60=_iv_safe(
                 market_price=float(pe60["SETTLE_PR"]),
-                S=float(spot), K=float(strike), T=t_60, r=r_dec, is_call=False,
+                S=float(spot_raw), K=float(strike), T=t_60, r=r_dec, is_call=False,
             ),
             iv_90=_iv_safe(
                 market_price=float(pe90["SETTLE_PR"]),
-                S=float(spot), K=float(strike), T=t_90, r=r_dec, is_call=False,
+                S=float(spot_raw), K=float(strike), T=t_90, r=r_dec, is_call=False,
             ),
             volume=int(opts[opts["OPTION_TYP"] == "PE"]["CONTRACTS"].sum()),
             oi=_oi_int(pe30.get("OPEN_INT")),
@@ -365,7 +415,7 @@ def _process_symbol(
             ivp=None,
             ivr=None,
             greeks=black_scholes_greeks(
-                float(spot), float(strike), t_30, r_dec,
+                float(spot_raw), float(strike), t_30, r_dec,
                 iv_pe30 / 100 if iv_pe30 else 0.0, False,
             )
             if t_30 and iv_pe30

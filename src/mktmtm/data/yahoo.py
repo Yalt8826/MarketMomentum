@@ -173,29 +173,31 @@ def download_yahoo_prices(
             indicators = result.get("indicators", {})
             closes = indicators.get("quote", [{}])[0].get("close", [])
 
-            # Prefer the split/dividend-adjusted series. The raw ``quote.close``
-            # carries corporate-action discontinuities straight into the returns
-            # (and therefore into the next-day label) — see
-            # docs/data/ml-dataset-report.md §3. We already request it via
-            # includeAdjustedClose=true; it was simply being discarded.
+            # Adjusted close (split/dividend-restated) is the correct basis for
+            # *returns and labels*: raw ``quote.close`` carries corporate-action
+            # discontinuities straight into the returns (and therefore into the
+            # next-day label) — see docs/data/ml-dataset-report.md §3.
             adj_list = indicators.get("adjclose") or []
             adj_closes = adj_list[0].get("adjclose", []) if adj_list else []
-            if not adj_closes:
-                logger.warning(
-                    "%s: no adjusted close in Yahoo response — falling back to raw "
-                    "close; corporate actions will show as spurious returns",
-                    symbol,
-                )
 
             for idx, ts in enumerate(ts_list):
-                close_px = adj_closes[idx] if idx < len(adj_closes) else None
-                if close_px is None:  # adjclose can be sparse; fall back per-point
-                    close_px = closes[idx] if idx < len(closes) else None
-                if close_px is None:
+                # Raw traded close: the *unadjusted* value, on the same basis as
+                # NSE bhavcopy strikes/settles. This is the series that must feed
+                # ATM-strike selection and IV/Greeks — see docs/data/iv-integrity-audit.md.
+                raw_px = closes[idx] if idx < len(closes) else None
+                # Adjusted close preferred for returns; raw fallback per-point.
+                adj_px = adj_closes[idx] if idx < len(adj_closes) else None
+                eff_px = adj_px if adj_px is not None else raw_px
+                if eff_px is None and raw_px is None:
                     continue
+                if eff_px is None:
+                    eff_px = raw_px
+                if raw_px is None:
+                    raw_px = eff_px
                 date_key = datetime.fromtimestamp(ts).strftime("%d-%b-%Y")
                 processed["historical"]["scripts"][symbol]["timestamps"][date_key] = {
-                    "underlying_price": close_px
+                    "underlying_price": eff_px,        # adjusted (returns/labels)
+                    "underlying_price_raw": raw_px,    # unadjusted (strike/IV/chain)
                 }
         except (KeyError, IndexError, TypeError):
             continue

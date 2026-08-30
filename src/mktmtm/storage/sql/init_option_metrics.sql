@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS option_metrics (
     symbol TEXT NOT NULL,
     date DATE NOT NULL,
     underlying_price FLOAT,
+    underlying_price_adj FLOAT,
     interest_rate FLOAT,
     strike_price FLOAT,
     expiry_30d DATE,

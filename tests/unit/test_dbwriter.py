@@ -86,18 +86,20 @@ def test_clean_for_json_recursive() -> None:
 def test_build_params_shape_and_scalars() -> None:
     d = {
         "underlying_price": 24500.5,
+        "underlying_price_adj": 24500.5,
         "interest_rate": 6.25,
         "strike_price": 24500.0,
         "rv_yz": 0.121,
     }
     p = _params(d=d)
-    assert len(p) == 14
+    assert len(p) == 15
     assert p[0] == "NIFTY"
     assert p[1] == date(2025, 8, 12)
     assert p[2] == 24500.5
-    assert p[3] == 6.25
-    assert p[4] == 24500.0
-    assert p[9] == 0.121
+    assert p[3] == 24500.5  # underlying_price_adj
+    assert p[4] == 6.25
+    assert p[5] == 24500.0
+    assert p[10] == 0.121
 
 
 def test_build_params_parses_date_fields() -> None:
@@ -108,31 +110,31 @@ def test_build_params_parses_date_fields() -> None:
         "upcoming_earning_date": "14-Nov-2025",
     }
     p = _params(d=d)
-    assert p[5] == date(2025, 10, 28)
-    assert p[6] == date(2025, 11, 27)
-    assert p[7] == date(2025, 12, 26)
-    assert p[8] == date(2025, 11, 14)
+    assert p[6] == date(2025, 10, 28)
+    assert p[7] == date(2025, 11, 27)
+    assert p[8] == date(2025, 12, 26)
+    assert p[9] == date(2025, 11, 14)
 
 
 def test_build_params_missing_or_bad_dates_become_none() -> None:
     d = {"expiry_30d": None, "expiry_60d": "not-a-date", "expiry_90d": "31-Feb-2025"}
     p = _params(d=d)
-    assert p[5] is None
     assert p[6] is None
     assert p[7] is None
+    assert p[8] is None
 
 
 def test_build_params_wraps_json_columns() -> None:
     d = {"ce": {"iv_30": 12.5}, "pe": {}, "option_chain": [{"strike": 24500}], "extras": None}
     p = _params(d=d)
-    assert isinstance(p[10], Json)
     assert isinstance(p[11], Json)
     assert isinstance(p[12], Json)
     assert isinstance(p[13], Json)
-    assert json.loads(p[10].dumps(p[10].adapted)) == {"iv_30": 12.5}
+    assert isinstance(p[14], Json)
+    assert json.loads(p[11].dumps(p[11].adapted)) == {"iv_30": 12.5}
     # empty dicts / missing fields default to {} or []
-    assert json.loads(p[11].dumps(p[11].adapted)) == {}
-    assert json.loads(p[13].dumps(p[13].adapted)) == {}
+    assert json.loads(p[12].dumps(p[12].adapted)) == {}
+    assert json.loads(p[14].dumps(p[14].adapted)) == {}
 
 
 def test_build_params_nan_scrub_inside_json() -> None:
@@ -142,11 +144,11 @@ def test_build_params_nan_scrub_inside_json() -> None:
         "option_chain": [{"iv": float("nan")}],
     }
     p = _params(d=d)
-    ce = json.loads(p[10].dumps(p[10].adapted))
+    ce = json.loads(p[11].dumps(p[11].adapted))
     assert ce["iv_30"] is None
     assert ce["greeks"]["delta"] is None
     assert ce["ok"] == 1.5
-    chain = json.loads(p[12].dumps(p[12].adapted))
+    chain = json.loads(p[13].dumps(p[13].adapted))
     assert chain[0]["iv"] is None
 
 

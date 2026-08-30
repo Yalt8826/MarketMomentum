@@ -32,13 +32,15 @@ def test_iv_bisection_round_trips_for_puts() -> None:
     assert iv == pytest.approx(known_sigma, abs=1e-6)
 
 
-def test_iv_bisection_returns_zero_for_intrinsic_price() -> None:
-    """No time value (price == intrinsic) => IV of zero, no blow-up."""
+def test_iv_bisection_returns_none_for_intrinsic_price() -> None:
+    """No time value (price == intrinsic) or non-convergence => None, not a sentinel."""
     S, K, T, r = 100.0, 90.0, 0.5, 0.05
     # Call priced exactly at intrinsic value (S - K)
-    assert implied_volatility_bisection(10.0, S, K, T, r, is_call=True) == 0.0
+    assert implied_volatility_bisection(10.0, S, K, T, r, is_call=True) is None
     # Put priced exactly at intrinsic value (max(K - S, 0) == 0)
-    assert implied_volatility_bisection(0.0, S, K, T, r, is_call=False) == 0.0
+    assert implied_volatility_bisection(0.0, S, K, T, r, is_call=False) is None
+    # Non-convergence (price beyond what any IV in the bracket can produce) => None
+    assert implied_volatility_bisection(1e9, S, K, T, r, is_call=True) is None
 
 
 def test_greeks_finite_and_atm_delta_approx_half() -> None:

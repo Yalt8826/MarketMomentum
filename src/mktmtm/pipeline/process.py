@@ -65,13 +65,20 @@ _IV_WINDOW = 252
 _IV_MIN_PERIODS = 60
 
 
-def load_spot_prices(symbols: list[str], yahoo_dir: Path) -> dict[str, dict[str, float]]:
-    """Read ``<SYMBOL>_processed.json`` files into ``{symbol: {date_key: price}}``.
+def load_spot_prices(
+    symbols: list[str], yahoo_dir: Path
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Read ``<SYMBOL>_processed.json`` files into spot-price maps.
 
-    Mirrors the legacy engine's Yahoo spot-price map: only dates carrying an
-    ``underlying_price`` are kept; missing/empty files are skipped.
+    Returns ``{symbol: {date_key: {"adjusted": float, "raw": float}}}``. The
+    **raw** (unadjusted) close is the basis for ATM-strike selection and
+    IV/Greeks — it shares the same corporate-action basis as NSE bhavcopy
+    strikes/settles. The **adjusted** close is the basis for returns/labels.
+    Mirrors the legacy engine's Yahoo spot map; missing/empty files are skipped.
+    When a stored timestamp lacks one series (old fixtures), both are set from
+    the value present (for an index, adjusted == raw, so this is lossless).
     """
-    spot_price_map: dict[str, dict[str, float]] = {}
+    spot_price_map: dict[str, dict[str, dict[str, float]]] = {}
     for symbol in symbols:
         json_path = yahoo_dir / f"{symbol}_processed.json"
         if not json_path.exists():
@@ -83,12 +90,21 @@ def load_spot_prices(symbols: list[str], yahoo_dir: Path) -> dict[str, dict[str,
         except (KeyError, TypeError, json.JSONDecodeError):
             continue
 
-        prices: dict[str, float] = {}
+        prices: dict[str, dict[str, float]] = {}
         for date_key, ts_data in timestamps.items():
-            if isinstance(ts_data, dict) and "underlying_price" in ts_data:
-                price = ts_data["underlying_price"]
-                if isinstance(price, (int, float)) and np.isfinite(price):
-                    prices[date_key] = float(price)
+            if not isinstance(ts_data, dict):
+                continue
+            adj = ts_data.get("underlying_price")
+            raw = ts_data.get("underlying_price_raw")
+            if adj is None and raw is None:
+                continue
+            if not isinstance(adj, (int, float)) or not np.isfinite(adj):
+                adj = raw if isinstance(raw, (int, float)) and np.isfinite(raw) else None
+            if not isinstance(raw, (int, float)) or not np.isfinite(raw):
+                raw = adj
+            if adj is None and raw is None:
+                continue
+            prices[date_key] = {"adjusted": float(adj), "raw": float(raw)}
         spot_price_map[symbol] = prices
     return spot_price_map
 
@@ -216,6 +232,14 @@ def _oi_int(v: Any) -> int:
         return 0
 
 
+def _iv_pct(
+    market_price: float, S: float, K: float, T: float, r: float, is_call: bool
+) -> float | None:
+    """Implied vol in percent, or None when the solver returns None (no sentinels)."""
+    iv = implied_volatility_bisection(market_price, S, K, T, r, is_call=is_call)
+    return iv * 100.0 if iv is not None else None
+
+
 def _build_chain_rows(
     options_data: pd.DataFrame,
     symbol: str,
@@ -239,14 +263,18 @@ def _build_chain_rows(
                 r=r_decimal,
                 is_call=(row["OPTION_TYP"] == "CE"),
             )
-            delta_row = black_scholes_greeks(
-                spot_price,
-                float(row["STRIKE_PR"]),
-                t_row,
-                r_decimal,
-                iv_row,
-                is_call=(row["OPTION_TYP"] == "CE"),
-            )["delta"]
+            delta_row = (
+                black_scholes_greeks(
+                    spot_price,
+                    float(row["STRIKE_PR"]),
+                    t_row,
+                    r_decimal,
+                    iv_row,
+                    is_call=(row["OPTION_TYP"] == "CE"),
+                )["delta"]
+                if iv_row is not None
+                else None
+            )
             chain_rows.append(
                 {
                     "expiry": expiry_str,
@@ -260,7 +288,7 @@ def _build_chain_rows(
                     "volume": int(row["CONTRACTS"]),
                     "oi": _oi_int(row.get("OPEN_INT")),
                     "chg_oi": _oi_int(row.get("CHG_IN_OI")),
-                    "iv": iv_row * 100.0 if iv_row else 0.0,
+                    "iv": (iv_row * 100.0) if iv_row is not None else None,
                     "delta": delta_row,
                 }
             )
@@ -355,14 +383,19 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                     }
                 )
 
-                spot_price = spot_price_map.get(symbol, {}).get(date_key)
-                if spot_price is None or not np.isfinite(spot_price):
+                spot_rec = spot_price_map.get(symbol, {}).get(date_key)
+                if spot_rec is None:
+                    continue
+                spot_price = spot_rec["raw"]  # unadjusted — strike/IV basis
+                spot_adj = spot_rec["adjusted"]
+                if not np.isfinite(spot_price) or not np.isfinite(spot_adj):
                     continue
 
                 timestamps = result["historical"]["scripts"][symbol]["timestamps"]
                 if date_key not in timestamps:
                     timestamps[date_key] = {
                         "underlying_price": spot_price,
+                        "underlying_price_adj": spot_adj,
                         "interest_rate": fallback_rate,
                         "upcoming_earning_date": None,
                         "expiry_30d": None,
@@ -415,77 +448,17 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                 ce_30d_price = float(ce30["SETTLE_PR"])
                 pe_30d_price = float(pe30["SETTLE_PR"])
 
-                ce_iv_30 = (
-                    implied_volatility_bisection(
-                        market_price=ce_30d_price,
-                        S=spot_price,
-                        K=float(chosen_strike),
-                        T=t_30,
-                        r=r_decimal,
-                        is_call=True,
-                    )
-                    * 100.0
-                )
-                pe_iv_30 = (
-                    implied_volatility_bisection(
-                        market_price=pe_30d_price,
-                        S=spot_price,
-                        K=float(chosen_strike),
-                        T=t_30,
-                        r=r_decimal,
-                        is_call=False,
-                    )
-                    * 100.0
-                )
-                ce_iv_60 = (
-                    implied_volatility_bisection(
-                        market_price=float(ce60["SETTLE_PR"]),
-                        S=spot_price,
-                        K=float(chosen_strike),
-                        T=t_60,
-                        r=r_decimal,
-                        is_call=True,
-                    )
-                    * 100.0
-                )
-                pe_iv_60 = (
-                    implied_volatility_bisection(
-                        market_price=float(pe60["SETTLE_PR"]),
-                        S=spot_price,
-                        K=float(chosen_strike),
-                        T=t_60,
-                        r=r_decimal,
-                        is_call=False,
-                    )
-                    * 100.0
-                )
-                ce_iv_90 = (
-                    implied_volatility_bisection(
-                        market_price=float(ce90["SETTLE_PR"]),
-                        S=spot_price,
-                        K=float(chosen_strike),
-                        T=t_90,
-                        r=r_decimal,
-                        is_call=True,
-                    )
-                    * 100.0
-                )
-                pe_iv_90 = (
-                    implied_volatility_bisection(
-                        market_price=float(pe90["SETTLE_PR"]),
-                        S=spot_price,
-                        K=float(chosen_strike),
-                        T=t_90,
-                        r=r_decimal,
-                        is_call=False,
-                    )
-                    * 100.0
-                )
+                ce_iv_30 = _iv_pct(ce_30d_price, spot_price, float(chosen_strike), t_30, r_decimal, True)
+                pe_iv_30 = _iv_pct(pe_30d_price, spot_price, float(chosen_strike), t_30, r_decimal, False)
+                ce_iv_60 = _iv_pct(float(ce60["SETTLE_PR"]), spot_price, float(chosen_strike), t_60, r_decimal, True)
+                pe_iv_60 = _iv_pct(float(pe60["SETTLE_PR"]), spot_price, float(chosen_strike), t_60, r_decimal, False)
+                ce_iv_90 = _iv_pct(float(ce90["SETTLE_PR"]), spot_price, float(chosen_strike), t_90, r_decimal, True)
+                pe_iv_90 = _iv_pct(float(pe90["SETTLE_PR"]), spot_price, float(chosen_strike), t_90, r_decimal, False)
 
                 ce_volume = int(options_data[options_data["OPTION_TYP"] == "CE"]["CONTRACTS"].sum())
                 pe_volume = int(options_data[options_data["OPTION_TYP"] == "PE"]["CONTRACTS"].sum())
 
-                if ce_iv_30 > 0 and t_30 > 0:
+                if ce_iv_30 is not None and ce_iv_30 > 0 and t_30 > 0:
                     greeks_ce_30 = black_scholes_greeks(
                         spot_price,
                         float(chosen_strike),
@@ -503,7 +476,7 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                         "rho": 0.0,
                     }
 
-                if pe_iv_30 > 0 and t_30 > 0:
+                if pe_iv_30 is not None and pe_iv_30 > 0 and t_30 > 0:
                     greeks_pe_30 = black_scholes_greeks(
                         spot_price,
                         float(chosen_strike),
