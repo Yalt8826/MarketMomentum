@@ -23,6 +23,7 @@ import pandas as pd
 import psycopg2  # no stubs (see pyproject mypy overrides)
 from psycopg2.extras import execute_values
 
+from mktmtm.options.dealer_exposure import DEALER_SIGN
 from mktmtm.storage.db import build_dsn
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,16 @@ TIER3_COLUMNS = [
     "chain_breadth",
 ]
 
+# Phase 3 — dealer-exposure aggregates. All are raw-basis (hard rule 3);
+# `gex_chg` is the chg_oi-weighted "today's positioning change" computed in
+# SQL, while `dex_chg`/`oi_hhi_chg` are day-over-day diffs computed in
+# `_add_derived` (NSE publishes no per-strike delta/oi-history analog).
+GEX_COLUMNS = [
+    "dex", "gex", "gex_chg", "vanna_exp", "charm_exp", "oi_hhi",
+    "max_pain", "call_wall", "put_wall", "dist_to_call_wall",
+    "otm_put_oi_build", "dex_chg", "oi_hhi_chg", "dist_to_flip",
+]
+
 TARGET_COLUMNS = [
     "next_day_return",
     "next_day_direction",
@@ -82,7 +93,7 @@ TARGET_COLUMNS = [
 
 DATASET_COLUMNS = (
     IDENTITY_COLUMNS + LEVEL_COLUMNS + CE_PE_COLUMNS + TIER2_COLUMNS
-    + TIER3_COLUMNS + TARGET_COLUMNS
+    + TIER3_COLUMNS + GEX_COLUMNS + TARGET_COLUMNS
 )
 
 _GREEK_KEYS = ("delta", "gamma", "theta", "vega", "rho")
@@ -103,7 +114,22 @@ _TRADING_DAYS = 252.0
 # Chain aggregates are computed in SQL (jsonb is C-speed there; a python pass
 # over ~320M chain elements would take minutes). Each lateral join re-parses
 # the array, which is acceptable for a one-shot build.
-_CHAIN_AGG_SQL = """
+
+
+def _dealer_sign_case_sql() -> str:
+    """Render the SQL sign CASE from ``DEALER_SIGN`` (single source of truth).
+
+    Phase 6 flips the convention as a robustness check by editing
+    ``DEALER_SIGN``; every aggregate built on this fragment follows in one
+    line. Never hard-code ``+1``/``-1`` at a call site.
+    """
+    ce, pe = DEALER_SIGN["CE"], DEALER_SIGN["PE"]
+    return f"(CASE WHEN e->>'type' = 'CE' THEN {ce!r} ELSE {pe!r} END)"
+
+
+_DEALER_SIGN_SQL = _dealer_sign_case_sql()
+
+_CHAIN_AGG_SQL = f"""
 SELECT
     m.symbol,
     m.date,
@@ -115,6 +141,17 @@ SELECT
     agg.chain_oi,
     agg.chain_oi_chg,
     agg.chain_breadth,
+    gex_agg.dex,
+    gex_agg.gex,
+    gex_agg.gex_chg,
+    gex_agg.vanna_exp,
+    gex_agg.charm_exp,
+    gex_agg.otm_put_oi_build,
+    hhi.oi_hhi,
+    maxpain.max_pain,
+    cwall.call_wall,
+    cwall.dist_to_call_wall,
+    pwall.put_wall,
     straddle.straddle        AS atm_straddle,
     skew.skew_25d,
     otm.otm_put_iv
@@ -131,6 +168,76 @@ LEFT JOIN LATERAL (
         AVG(CASE WHEN (e->>'volume')::bigint > 0 THEN 1.0 ELSE 0.0 END) AS chain_breadth
     FROM jsonb_array_elements(m.option_chain) e
 ) agg ON TRUE
+LEFT JOIN LATERAL (
+    -- Phase 3 dealer-exposure sums. All raw-basis (hard rule 3): S is
+    -- m.underlying_price. A Greek key absent from an element (pre-Phase-2
+    -- chain) makes that term NULL and SUM skips it, so a chain with no gamma
+    -- yields NULL gex — missing data is never silently read as zero exposure.
+    SELECT
+        SUM(COALESCE((e->>'oi')::bigint, 0) * (e->>'delta')::float * m.underlying_price) AS dex,
+        SUM({_DEALER_SIGN_SQL} * COALESCE((e->>'oi')::bigint, 0) * (e->>'gamma')::float * m.underlying_price * m.underlying_price * 0.01) AS gex,
+        SUM({_DEALER_SIGN_SQL} * COALESCE((e->>'chg_oi')::bigint, 0) * (e->>'gamma')::float * m.underlying_price * m.underlying_price * 0.01) AS gex_chg,
+        SUM({_DEALER_SIGN_SQL} * COALESCE((e->>'oi')::bigint, 0) * (e->>'vanna')::float) AS vanna_exp,
+        SUM({_DEALER_SIGN_SQL} * COALESCE((e->>'oi')::bigint, 0) * (e->>'charm')::float) AS charm_exp,
+        SUM(CASE WHEN e->>'type' = 'PE' AND (e->>'strike')::float < 0.95 * m.underlying_price
+                 THEN COALESCE((e->>'chg_oi')::bigint, 0) ELSE 0 END) AS otm_put_oi_build
+    FROM jsonb_array_elements(m.option_chain) e
+) gex_agg ON TRUE
+LEFT JOIN LATERAL (
+    -- Herfindahl of open interest across strikes (CE+PE pooled per strike).
+    SELECT SUM(s.share * s.share) AS oi_hhi
+    FROM (
+        SELECT k.strike_oi / NULLIF(SUM(k.strike_oi) OVER (), 0) AS share
+        FROM (
+            SELECT (e->>'strike')::float AS strike,
+                   SUM(COALESCE((e->>'oi')::bigint, 0)) AS strike_oi
+            FROM jsonb_array_elements(m.option_chain) e
+            GROUP BY (e->>'strike')::float
+        ) k
+    ) s
+) hhi ON TRUE
+LEFT JOIN LATERAL (
+    -- Max pain: strike minimising OI-weighted total ITM value, near expiry.
+    SELECT p.strike AS max_pain
+    FROM (
+        SELECT
+            (e->>'strike')::float AS strike,
+            SUM(CASE WHEN e->>'type' = 'CE'
+                     THEN GREATEST(m.underlying_price - (e->>'strike')::float, 0) * COALESCE((e->>'oi')::bigint, 0)
+                     ELSE GREATEST((e->>'strike')::float - m.underlying_price, 0) * COALESCE((e->>'oi')::bigint, 0)
+                END) AS pain
+        FROM jsonb_array_elements(m.option_chain) e
+        WHERE e->>'expiry' = to_char(m.expiry_30d, 'DD-Mon-YYYY')
+        GROUP BY (e->>'strike')::float
+    ) p
+    ORDER BY p.pain ASC NULLS LAST, p.strike ASC
+    LIMIT 1
+) maxpain ON TRUE
+LEFT JOIN LATERAL (
+    -- Call wall: strike with the most CE open interest; distance on raw S.
+    SELECT w.strike AS call_wall,
+           (w.strike - m.underlying_price) / NULLIF(m.underlying_price, 0) AS dist_to_call_wall
+    FROM (
+        SELECT (e->>'strike')::float AS strike
+        FROM jsonb_array_elements(m.option_chain) e
+        WHERE e->>'type' = 'CE'
+        GROUP BY (e->>'strike')::float
+        ORDER BY SUM(COALESCE((e->>'oi')::bigint, 0)) DESC, (e->>'strike')::float ASC
+        LIMIT 1
+    ) w
+) cwall ON TRUE
+LEFT JOIN LATERAL (
+    -- Put wall: strike with the most PE open interest.
+    SELECT w.strike AS put_wall
+    FROM (
+        SELECT (e->>'strike')::float AS strike
+        FROM jsonb_array_elements(m.option_chain) e
+        WHERE e->>'type' = 'PE'
+        GROUP BY (e->>'strike')::float
+        ORDER BY SUM(COALESCE((e->>'oi')::bigint, 0)) DESC, (e->>'strike')::float ASC
+        LIMIT 1
+    ) w
+) pwall ON TRUE
 LEFT JOIN LATERAL (
     -- CE+PE settle at the strike nearest the spot, on the ~30d expiry
     SELECT SUM(s.settle) AS straddle
@@ -233,7 +340,10 @@ def _load_base(conn: Any, symbols: list[str] | None, limit_dates: int | None) ->
     # option_metrics.underlying_price directly in SQL). See
     # docs/data/iv-integrity-audit.md.
     sql = (
-        "SELECT symbol, date, underlying_price_adj AS underlying_price, interest_rate, rv_yz, "
+        "SELECT symbol, date, underlying_price_adj AS underlying_price, "
+        # raw close, kept under a distinct name: it is the only correct basis
+        # for strike-relative features (hard rule 3), e.g. dist_to_flip.
+        "underlying_price AS underlying_price_raw, gamma_flip, interest_rate, rv_yz, "
         "expiry_30d, expiry_60d, expiry_90d, upcoming_earning_date, ce, pe "
         "FROM option_metrics"
         + (f" WHERE {' AND '.join(where)}" if where else "")
@@ -319,6 +429,23 @@ def _add_derived(df: pd.DataFrame) -> pd.DataFrame:
     out["put_call_vol_ratio"] = _ratio(out["chain_pe_vol"], out["chain_ce_vol"])
     out["put_call_oi_ratio"] = _ratio(out["chain_pe_oi"], out["chain_ce_oi"])
     out["otm_put_iv_premium"] = out["otm_put_iv"] - out["pe_iv_30"]
+
+    # Phase 3 — dealer-exposure extras. Day-over-day *changes* must respect
+    # row order (hard rule 4): groupby().diff() on the (symbol, date)-sorted
+    # frame. gex_chg is already the chg_oi-weighted "today's positioning
+    # change" computed in SQL, so only dex and oi_hhi get pandas diffs here.
+    # The guards keep _add_derived usable on frames without the GEX columns
+    # (unit fixtures); build_dataset always merges them from SQL.
+    if "dex" in out.columns:
+        out["dex_chg"] = g["dex"].diff()
+    if "oi_hhi" in out.columns:
+        out["oi_hhi_chg"] = g["oi_hhi"].diff()
+    # dist_to_flip is raw-basis (hard rule 3): gamma_flip is a spot level
+    # computed from the raw chain at ETL time. NULL when there is no flip.
+    if {"underlying_price_raw", "gamma_flip"} <= set(out.columns):
+        out["dist_to_flip"] = _ratio(
+            out["underlying_price_raw"] - out["gamma_flip"], out["underlying_price_raw"]
+        )
     return out
 
 

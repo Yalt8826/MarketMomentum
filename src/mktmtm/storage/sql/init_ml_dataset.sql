@@ -63,6 +63,23 @@ CREATE TABLE IF NOT EXISTS ml_dataset (
     chain_oi             DOUBLE PRECISION,
     chain_oi_chg         DOUBLE PRECISION,
     chain_breadth        DOUBLE PRECISION,
+    -- Phase 3 — dealer-exposure aggregates (raw-basis; see ml/dataset.py
+    -- GEX_COLUMNS). gex_chg is the chg_oi-weighted positioning change;
+    -- dex_chg / oi_hhi_chg are day-over-day diffs.
+    dex                  DOUBLE PRECISION,
+    gex                  DOUBLE PRECISION,
+    gex_chg              DOUBLE PRECISION,
+    vanna_exp            DOUBLE PRECISION,
+    charm_exp            DOUBLE PRECISION,
+    oi_hhi               DOUBLE PRECISION,
+    max_pain             DOUBLE PRECISION,
+    call_wall            DOUBLE PRECISION,
+    put_wall             DOUBLE PRECISION,
+    dist_to_call_wall    DOUBLE PRECISION,
+    otm_put_oi_build     DOUBLE PRECISION,
+    dex_chg              DOUBLE PRECISION,
+    oi_hhi_chg           DOUBLE PRECISION,
+    dist_to_flip         DOUBLE PRECISION,
     next_day_return      DOUBLE PRECISION,
     next_day_direction   SMALLINT,
     next_day_abs_return  DOUBLE PRECISION,
@@ -71,6 +88,24 @@ CREATE TABLE IF NOT EXISTS ml_dataset (
     next_day_vrp         DOUBLE PRECISION,
     PRIMARY KEY (symbol, date)
 );
+
+-- Idempotent migration for databases created before the Phase-3 columns
+-- existed (CREATE TABLE IF NOT EXISTS above is a no-op on them).
+ALTER TABLE ml_dataset
+    ADD COLUMN IF NOT EXISTS dex DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS gex DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS gex_chg DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS vanna_exp DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS charm_exp DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS oi_hhi DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS max_pain DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS call_wall DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS put_wall DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS dist_to_call_wall DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS otm_put_oi_build DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS dex_chg DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS oi_hhi_chg DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS dist_to_flip DOUBLE PRECISION;
 
 -- Chronological train/test splits + class-balance queries.
 CREATE INDEX IF NOT EXISTS idx_ml_dataset_date ON ml_dataset(date);
