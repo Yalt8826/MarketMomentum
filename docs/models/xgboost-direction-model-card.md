@@ -235,6 +235,13 @@ non-zero ranking signal: IC t-stat 4.04 over 153 dates.
 - `models/evaluation/xgb_direction_test.json` — 7.4 (the exit artifact)
 - `models/candidates/xgb_direction_2026-08-31.json` (Phase 6) and
   `models/candidates/xgb_direction_test_2026-08-31.json` (Phase 7 final fit)
+- `models/promoted/xgb_direction_test_2026-08-31.json` +
+  `models/promoted/xgb_direction_test.json` — Phase 8 promotion of the
+  accepted final fit (byte-verified copies of the candidate + its evaluation)
+
+Phase 8 wiring (`mktmtm train-direction` with `--train-end` / `--valid-end` /
+`--output-dir` / `--no-normalize`, and `mktmtm promote-direction`) is in
+`src/mktmtm/cli.py` (`src/mktmtm/ml/splits.py`, `ml/promote.py`).
 
 `models/{evaluation,candidates,promoted}/` are gitignored — artifacts stay
 local; this card is the committed record.
