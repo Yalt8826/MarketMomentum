@@ -238,6 +238,65 @@ def train_direction(
     )
 
 
+def _latest_test_candidate(candidates_dir: Path) -> Path:
+    """The most recent ``xgb_direction_test_*.json`` candidate (Phase 7 final fit)."""
+    matches = sorted(candidates_dir.glob("xgb_direction_test_*.json"))
+    if not matches:
+        raise FileNotFoundError(
+            f"no xgb_direction_test_*.json candidates under {candidates_dir}; "
+            "run `mktmtm train-direction` first"
+        )
+    return matches[-1]
+
+
+@app.command(name="promote-direction")
+def promote_direction(
+    model: Annotated[
+        Path | None,
+        typer.Option(
+            "--model",
+            help="Candidate model file to promote "
+            "(default: latest xgb_direction_test_*.json in <repo>/models/candidates).",
+        ),
+    ] = None,
+    evaluation: Annotated[
+        Path | None,
+        typer.Option(
+            "--evaluation",
+            help="Evaluation JSON to promote alongside the model "
+            "(default: <repo>/models/evaluation/xgb_direction_test.json).",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Promoted artifacts directory (default: <repo>/models/promoted).",
+        ),
+    ] = None,
+) -> None:
+    """Promote the accepted direction model into models/promoted/ (Phase 8, Task 8.2).
+
+    Copies the accepted model from models/candidates/ plus its evaluation JSON
+    (both byte-verified via sha256) into the promoted directory. Artifacts stay
+    local — models/ is gitignored — the model card is the committed record.
+    """
+    from mktmtm.ml.promote import promote
+
+    model_path = model if model is not None else _latest_test_candidate(settings.candidates_dir)
+    eval_path = (
+        evaluation
+        if evaluation is not None
+        else settings.evaluation_dir / "xgb_direction_test.json"
+    )
+    promoted = output_dir if output_dir is not None else settings.promoted_dir
+    record = promote(model_path, eval_path, promoted_dir=promoted)
+    typer.echo(
+        f"Promoted {record['model_dest']} (sha256 {record['model_sha256'][:12]}…)"
+    )
+    typer.echo(f"Evaluation: {record['evaluation_dest']} (sha256 {record['evaluation_sha256'][:12]}…)")
+
+
 @app.command()
 def backtest(
     symbols: Annotated[
