@@ -214,5 +214,149 @@ def backtest(
     typer.echo(f"Backtest finished; processed {processed} symbol-months.")
 
 
+@app.command(name="gex-features")
+def gex_features(
+    limit_symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--limit-symbols",
+            help="Comma-separated symbol subset (smoke runs); default: all symbols in option_metrics.",
+        ),
+    ] = None,
+    limit_dates: Annotated[
+        int | None,
+        typer.Option(
+            "--limit-dates",
+            min=1,
+            help="Only the N most recent trading dates (smoke runs).",
+        ),
+    ] = None,
+) -> None:
+    """Recompute dealer-exposure aggregates into ml_dataset (no full make-dataset).
+
+    Refreshes only the GEX_COLUMNS (dex, gex, gex_chg, vanna_exp, charm_exp,
+    oi_hhi, max_pain, call_wall/put_wall, dist_to_flip, ...) from the chain,
+    leaving momentum features and targets untouched. Long phases report through
+    ``mktmtm.progress`` and a final summary table is printed.
+    """
+    import psycopg2
+
+    from mktmtm.gex_features import recompute_dealer_aggregates
+    from mktmtm.gex_pipeline import print_summary_table
+    from mktmtm.storage.db import build_dsn
+
+    syms = _parse_csv(limit_symbols, str)
+    conn = psycopg2.connect(build_dsn())
+    try:
+        summary = recompute_dealer_aggregates(conn, symbols=syms, limit_dates=limit_dates)
+    finally:
+        conn.close()
+    print_summary_table(summary)
+
+
+@app.command(name="test-gex")
+def test_gex(
+    limit_symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--limit-symbols",
+            help="Comma-separated symbol subset (smoke runs); default: all symbols in ml_dataset.",
+        ),
+    ] = None,
+    limit_dates: Annotated[
+        int | None,
+        typer.Option(
+            "--limit-dates",
+            min=1,
+            help="Only the N most recent trading dates (smoke runs).",
+        ),
+    ] = None,
+    out_path: Annotated[
+        Path | None,
+        typer.Option("--out", help="JSON output path (default: models/evaluation/gex_h1.json)."),
+    ] = None,
+    no_model: Annotated[
+        bool,
+        typer.Option("--no-model", help="Skip Task 6.3 even if H1/H2 shows signal."),
+    ] = False,
+) -> None:
+    """Run Phase 6's hypothesis tests (H1/H2/robustness), write the JSON, print a results table."""
+    import psycopg2
+
+    from mktmtm.gex_pipeline import print_results_table
+    from mktmtm.ml.gex_hypothesis import DEFAULT_OUT_PATH, MissingDataError, run_exit_test
+    from mktmtm.storage.db import build_dsn
+
+    syms = _parse_csv(limit_symbols, str)
+    path = out_path if out_path is not None else DEFAULT_OUT_PATH
+    conn = psycopg2.connect(build_dsn())
+    try:
+        try:
+            result = run_exit_test(
+                conn,
+                out_path=path,
+                symbols=syms,
+                limit_dates=limit_dates,
+                run_model_if_signal=not no_model,
+            )
+        except MissingDataError as exc:
+            typer.echo(f"test-gex: {exc}", err=True)
+            raise typer.Exit(code=1) from exc
+    finally:
+        conn.close()
+    typer.echo(f"Wrote {path}")
+    print_results_table(result)
+
+
+@app.command(name="gex-pipeline")
+def gex_pipeline(
+    limit_symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--limit-symbols",
+            help="Comma-separated symbol subset for gex-features/test-gex (smoke runs).",
+        ),
+    ] = None,
+    limit_dates: Annotated[
+        int | None,
+        typer.Option(
+            "--limit-dates",
+            min=1,
+            help="Only the N most recent trading dates (smoke runs).",
+        ),
+    ] = None,
+    out_path: Annotated[
+        Path | None,
+        typer.Option("--out", help="test-gex JSON output path (default: models/evaluation/gex_h1.json)."),
+    ] = None,
+    no_model: Annotated[
+        bool,
+        typer.Option("--no-model", help="Skip Task 6.3 even if H1/H2 shows signal."),
+    ] = False,
+    skip: Annotated[
+        str | None,
+        typer.Option(
+            "--skip",
+            help="Comma-separated stages to skip: preparse,etl,gex-features,test-gex.",
+        ),
+    ] = None,
+) -> None:
+    """Run preparse → etl → gex-features → test-gex with staged progress UI.
+
+    Each stage calls the same function its standalone command calls; this adds
+    per-stage banners and a final results table (rich on a TTY, log lines
+    otherwise).
+    """
+    from mktmtm.gex_pipeline import run_gex_pipeline
+
+    run_gex_pipeline(
+        limit_symbols=limit_symbols,
+        limit_dates=limit_dates,
+        out_path=out_path,
+        run_model=not no_model,
+        skip=set(skip.split(",")) if skip and skip.strip() else None,
+    )
+
+
 def main() -> None:
     app()
