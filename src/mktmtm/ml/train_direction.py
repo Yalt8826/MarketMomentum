@@ -27,7 +27,7 @@ import xgboost as xgb
 
 from mktmtm.ml.features import load_training_frame
 from mktmtm.ml.metrics import daily_rank_ic, summarize
-from mktmtm.ml.splits import train_valid_test, walk_forward_splits
+from mktmtm.ml.splits import TRAIN_END, VALID_END, train_valid_test, walk_forward_splits
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,6 @@ logger = logging.getLogger(__name__)
 # Task 6.1 — the config. Every value is justified in the plan appendix; do not
 # tune here. Early stopping picks the real tree count; n_estimators is a cap.
 # ─────────────────────────────────────────────────────────────────────────────
-
-# TEST stays sealed until Phase 7: no walk-forward fold may validate on 2026.
-_TEST_START = pd.Timestamp("2026-01-01")
 
 PARAMS: dict[str, Any] = dict(
     objective="binary:logistic",
@@ -148,6 +145,10 @@ def run(
     parquet_path: Path | None = None,
     evaluation_dir: Path = EVALUATION_DIR,
     candidates_dir: Path = CANDIDATES_DIR,
+    *,
+    train_end: pd.Timestamp | None = None,
+    valid_end: pd.Timestamp | None = None,
+    normalize: bool = True,
 ) -> dict[str, Any]:
     """Run the Phase 6 exit test end to end.
 
@@ -155,10 +156,22 @@ def run(
     (TEST unused); fits early-stopped on VALID; scores VALID with ``summarize``;
     refits across walk-forward folds; writes ``xgb_direction_valid.json`` and the
     model to ``xgb_direction_<date>.json``. Returns the report dict.
+
+    ``train_end`` / ``valid_end`` override the sealed split boundaries (they
+    default to the Phase 0 constants; any 2026 data stays out of every walk-
+    forward fold regardless — TEST is ``date > valid_end`` and is never fit
+    on). ``normalize=False`` skips the per-date rank normalization in
+    ``load_training_frame`` (Phase 8 CLI wiring).
     """
-    frame, feature_names = load_training_frame(parquet_path=parquet_path)
-    train, valid, test = train_valid_test(frame)
-    del test  # 2026 stays sealed until Phase 7
+    frame, feature_names = load_training_frame(
+        parquet_path=parquet_path, normalize=normalize
+    )
+    train_end_ts = TRAIN_END if train_end is None else pd.Timestamp(train_end)
+    valid_end_ts = VALID_END if valid_end is None else pd.Timestamp(valid_end)
+    train, valid, test = train_valid_test(
+        frame, train_end=train_end_ts, valid_end=valid_end_ts
+    )
+    del test  # TEST stays sealed: never fit on it
 
     X_train = train[feature_names]
     y_train = train["next_day_direction"]
@@ -171,9 +184,9 @@ def run(
     valid_scored["pred"] = _predict_proba(model, X_valid)
     valid_metrics = summarize(valid_scored)
 
-    # Walk-forward robustness runs over TRAIN+VALID era only: 2026 (TEST) stays
-    # sealed until Phase 7, so no fold may validate on it.
-    pre_test = frame[frame["date"] < _TEST_START]
+    # Walk-forward robustness runs over the TRAIN+VALID era only: TEST
+    # (``date > valid_end``) stays sealed, so no fold may validate on it.
+    pre_test = frame[frame["date"] <= valid_end_ts]
     folds = walk_forward_ics(pre_test, feature_names, n_splits=5)
     fold_ics = folds["mean_ic"]
     wf_report = {
@@ -196,6 +209,12 @@ def run(
         "best_iteration": best_iteration,
         "n_estimators_fit": int(model.best_iteration or 0),
         "n_features": len(feature_names),
+        "normalize": normalize,
+        "split": {
+            "train_end": train_end_ts.date().isoformat(),
+            "valid_end": valid_end_ts.date().isoformat(),
+            "sealed_defaults": train_end_ts == TRAIN_END and valid_end_ts == VALID_END,
+        },
         "train": {
             "start": train["date"].min().isoformat(),
             "end": train["date"].max().isoformat(),

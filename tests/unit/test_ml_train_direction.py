@@ -161,3 +161,62 @@ def test_run_writes_artifacts_and_never_validates_on_2026(tmp_path: Path) -> Non
     with eval_path.open() as fh:
         saved = json.load(fh)
     assert saved["best_iteration"] == report["best_iteration"]
+    # Phase 8: the report records the split configuration used.
+    assert report["split"]["sealed_defaults"] is True
+    assert report["split"]["train_end"] == "2024-12-31"
+    assert report["split"]["valid_end"] == "2025-12-31"
+    assert report["normalize"] is True
+
+
+def test_run_honors_boundary_overrides_and_no_normalize(tmp_path: Path) -> None:
+    """Phase 8 (Task 8.1): --train-end / --valid-end / normalize flow into the fit.
+
+    With custom boundaries the TRAIN/VALID windows must move, and no
+    walk-forward fold may validate past the custom ``valid_end`` (the TEST
+    era stays sealed under the overridden boundaries too).
+    """
+    rng = np.random.default_rng(23)
+    dates = pd.bdate_range("2021-08-02", periods=1200)
+    n = len(dates) * 4
+    ret = rng.normal(0.0, 0.02, n)
+    frame = pd.DataFrame(
+        {
+            "date": pd.to_datetime(np.repeat(dates.values, 4)),
+            "symbol": [f"S{i}" for i in np.tile(np.arange(4), len(dates))],
+            "next_day_return": ret,
+            "next_day_direction": (ret > 0.0).astype(int),
+        }
+    )
+    for col in DATASET_COLUMNS:
+        if col not in frame.columns:
+            if col in ("ce_iv_30", "pe_iv_30"):
+                frame[col] = rng.uniform(10.0, 60.0, len(frame))
+            else:
+                frame[col] = rng.normal(size=len(frame))
+    parquet = tmp_path / "ml_dataset.parquet"
+    frame.to_parquet(parquet)
+
+    report = run(
+        parquet_path=parquet,
+        evaluation_dir=tmp_path / "eval",
+        candidates_dir=tmp_path / "cand",
+        train_end=pd.Timestamp("2024-06-30"),
+        valid_end=pd.Timestamp("2025-06-30"),
+        normalize=False,
+    )
+
+    assert report["split"]["train_end"] == "2024-06-30"
+    assert report["split"]["valid_end"] == "2025-06-30"
+    assert report["split"]["sealed_defaults"] is False
+    assert report["normalize"] is False
+    assert pd.Timestamp(report["train"]["end"]) <= pd.Timestamp("2024-06-30")
+    assert pd.Timestamp(report["valid"]["start"]) > pd.Timestamp("2024-06-30")
+    assert pd.Timestamp(report["valid"]["end"]) <= pd.Timestamp("2025-06-30")
+    # No fold may validate past the overridden valid_end.
+    valid_ends = pd.to_datetime(
+        [f["valid_end"] for f in report["walk_forward"]["folds"]]
+    )
+    assert (valid_ends <= pd.Timestamp("2025-06-30")).all()
+    # Artifacts still land in the requested dirs.
+    assert (tmp_path / "eval" / "xgb_direction_valid.json").exists()
+    assert list((tmp_path / "cand").glob("xgb_direction_*.json"))

@@ -121,14 +121,25 @@ def walk_forward_splits(
         yield train_idx, valid_idx
 
 
-def train_valid_test(frame: pd.DataFrame) -> tuple[pd.DataFrame, ...]:
+def train_valid_test(
+    frame: pd.DataFrame,
+    *,
+    train_end: pd.Timestamp | None = None,
+    valid_end: pd.Timestamp | None = None,
+) -> tuple[pd.DataFrame, ...]:
     """The fixed 2021-24 / 2025 / 2026 split from the plan, embargo applied.
 
-    Splits ``frame`` on its ``date`` column into the three sealed windows:
+    Splits ``frame`` on its ``date`` column into the three windows:
 
-    - TRAIN: 2021-08-02 .. 2024-12-31, minus the last ``EMBARGO_DAYS`` dates
-    - VALID: 2025-01-01 .. 2025-12-31, minus the last ``EMBARGO_DAYS`` dates
-    - TEST:  2026-01-01 .. end of data
+    - TRAIN: 2021-08-02 .. ``train_end``, minus the last ``EMBARGO_DAYS`` dates
+    - VALID: ``train_end`` < date <= ``valid_end``, minus the last
+      ``EMBARGO_DAYS`` dates
+    - TEST:  date > ``valid_end``
+
+    ``train_end`` / ``valid_end`` default to the sealed ``TRAIN_END`` /
+    ``VALID_END`` boundaries (Phase 8 CLI override); the defaults reproduce the
+    sealed 2021-24 / 2025 / 2026 split exactly, since ``VALID_START`` and
+    ``TEST_START`` are the day after the corresponding end.
 
     The purge carves the embargo gap out of each earlier side's tail, so both
     boundaries satisfy ``max(left) + EMBARGO_DAYS < min(right)`` in calendar
@@ -137,19 +148,28 @@ def train_valid_test(frame: pd.DataFrame) -> tuple[pd.DataFrame, ...]:
     Raises
     ------
     ValueError
-        If any of the three windows comes out empty.
+        If ``train_end >= valid_end`` or any of the three windows is empty.
     """
+    train_end_ts = TRAIN_END if train_end is None else pd.Timestamp(train_end)
+    valid_end_ts = VALID_END if valid_end is None else pd.Timestamp(valid_end)
+    if train_end_ts >= valid_end_ts:
+        raise ValueError(
+            f"train_end ({train_end_ts.date()}) must be < valid_end "
+            f"({valid_end_ts.date()}) so the VALID window is non-empty"
+        )
+
     dates = frame["date"]
-    train = frame[(dates >= TRAIN_START) & (dates <= TRAIN_END)]
-    valid = frame[(dates >= VALID_START) & (dates <= VALID_END)]
-    test = frame[dates >= TEST_START]
+    train = frame[(dates >= TRAIN_START) & (dates <= train_end_ts)]
+    valid = frame[(dates > train_end_ts) & (dates <= valid_end_ts)]
+    test = frame[dates > valid_end_ts]
     train = _purge_tail(train)
     valid = _purge_tail(valid)
     for name, part in (("train", train), ("valid", valid), ("test", test)):
         if part.empty:
             raise ValueError(
-                f"{name} split is empty: frame has no rows in the sealed "
-                f"{name} window"
+                f"{name} split is empty: frame has no rows in the "
+                f"{name} window (train_end {train_end_ts.date()}, "
+                f"valid_end {valid_end_ts.date()})"
             )
     return train, valid, test
 

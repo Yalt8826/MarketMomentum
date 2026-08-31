@@ -177,6 +177,67 @@ def make_dataset(
         conn.close()
 
 
+@app.command(name="train-direction")
+def train_direction(
+    train_end: Annotated[
+        datetime | None,
+        typer.Option(
+            "--train-end",
+            help="TRAIN window end date (YYYY-MM-DD); default: sealed 2024-12-31.",
+        ),
+    ] = None,
+    valid_end: Annotated[
+        datetime | None,
+        typer.Option(
+            "--valid-end",
+            help="VALID window end date (YYYY-MM-DD); default: sealed 2025-12-31. "
+            "TEST = everything after it, and is never fit on.",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output-dir",
+            help="Models root for artifacts; evaluation/ and candidates/ land under it "
+            "(default: <repo>/models).",
+        ),
+    ] = None,
+    no_normalize: Annotated[
+        bool,
+        typer.Option(
+            "--no-normalize",
+            help="Skip per-date rank normalization of the continuous features.",
+        ),
+    ] = False,
+) -> None:
+    """Train the XGBoost next-day direction model (Phase 6 exit test).
+
+    Fits on TRAIN with early stopping on VALID (AUC), runs the 5-fold
+    walk-forward robustness check over the TRAIN+VALID era, and writes
+    xgb_direction_valid.json plus the model to <output-dir>/candidates/.
+    TEST (everything after --valid-end) stays sealed.
+    """
+    import pandas as pd
+
+    from mktmtm.ml.train_direction import run as run_training
+
+    base = output_dir if output_dir is not None else settings.models_dir
+    report = run_training(
+        evaluation_dir=base / "evaluation",
+        candidates_dir=base / "candidates",
+        train_end=pd.Timestamp(train_end) if train_end is not None else None,
+        valid_end=pd.Timestamp(valid_end) if valid_end is not None else None,
+        normalize=not no_normalize,
+    )
+    valid_metrics = report["valid"]["metrics"]
+    typer.echo(
+        f"Trained xgb_direction: VALID AUC {valid_metrics['auc']:.4f}, "
+        f"mean IC {valid_metrics['mean_ic']:.4f}, ICIR {valid_metrics['icir']:.4f} "
+        f"(split train_end={report['split']['train_end']}, "
+        f"valid_end={report['split']['valid_end']}, normalize={report['normalize']})"
+    )
+
+
 @app.command()
 def backtest(
     symbols: Annotated[

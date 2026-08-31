@@ -169,3 +169,69 @@ def test_train_valid_test_raises_on_missing_period() -> None:
     frame["date"] = pd.to_datetime(frame["date"])
     with pytest.raises(ValueError, match="test split is empty"):
         train_valid_test(frame)
+
+
+def test_train_valid_test_custom_boundaries() -> None:
+    """Phase 8: --train-end / --valid-end overrides move all three windows."""
+    frame = _synthetic_frame()
+    train_end = pd.Timestamp("2024-06-30")
+    valid_end = pd.Timestamp("2025-06-30")
+    train, valid, test = train_valid_test(
+        frame, train_end=train_end, valid_end=valid_end
+    )
+
+    assert train["date"].min() == TRAIN_START
+    assert train["date"].max() <= train_end
+    assert valid["date"].min() > train_end
+    assert valid["date"].max() <= valid_end
+    assert test["date"].min() > valid_end
+
+    # the embargo gap is still enforced at both boundaries
+    _assert_embargo_gap(train, valid, EMBARGO_DAYS)
+    _assert_embargo_gap(valid, test, EMBARGO_DAYS)
+
+    # no (symbol, date) appears in more than one split
+    def keys(df: pd.DataFrame) -> set[tuple[str, pd.Timestamp]]:
+        return set(zip(df["symbol"], df["date"], strict=True))
+
+    assert not (keys(train) & keys(valid))
+    assert not (keys(train) & keys(test))
+    assert not (keys(valid) & keys(test))
+
+
+def test_train_valid_test_custom_boundaries_defaults_equal_sealed() -> None:
+    """Passing the sealed constants explicitly reproduces the default split exactly."""
+    frame = _synthetic_frame()
+    default = train_valid_test(frame)
+    explicit = train_valid_test(
+        frame, train_end=TRAIN_END, valid_end=VALID_END
+    )
+    for left, right in zip(default, explicit, strict=True):
+        assert left.equals(right)
+
+
+def test_train_valid_test_rejects_invalid_boundaries() -> None:
+    frame = _synthetic_frame()
+    with pytest.raises(ValueError, match="train_end .* must be < valid_end"):
+        train_valid_test(
+            frame,
+            train_end=pd.Timestamp("2025-06-30"),
+            valid_end=pd.Timestamp("2024-06-30"),
+        )
+    # equal ends are caught by the ordering validation
+    with pytest.raises(ValueError, match="train_end .* must be < valid_end"):
+        train_valid_test(
+            frame,
+            train_end=pd.Timestamp("2024-06-30"),
+            valid_end=pd.Timestamp("2024-06-30"),
+        )
+    # a non-trading gap between the ends leaves an empty VALID window
+    with pytest.raises(ValueError, match="valid split is empty"):
+        train_valid_test(
+            frame,
+            train_end=pd.Timestamp("2024-06-28"),
+            valid_end=pd.Timestamp("2024-06-30"),
+        )
+    # a valid_end at/after the last data date leaves an empty TEST window
+    with pytest.raises(ValueError, match="test split is empty"):
+        train_valid_test(frame, valid_end=pd.Timestamp("2026-08-28"))
