@@ -15,12 +15,20 @@ CREATE TABLE IF NOT EXISTS option_metrics (
     expiry_90d DATE,
     upcoming_earning_date DATE,
     rv_yz FLOAT,
+    -- Phase 3 (Task 3.3): spot at which net dealer GEX crosses zero, computed
+    -- at ETL time from the raw chain. NULL = no crossing in ±10% (a real
+    -- state, not a failure). See options/dealer_exposure.gamma_flip_spot.
+    gamma_flip FLOAT,
     ce JSONB,
     pe JSONB,
     option_chain JSONB,
     extras JSONB,
     PRIMARY KEY (symbol, date)
 );
+
+-- Idempotent migration for databases created before the column existed
+-- (CREATE TABLE IF NOT EXISTS above is a no-op on them).
+ALTER TABLE option_metrics ADD COLUMN IF NOT EXISTS gamma_flip FLOAT;
 
 -- ===================================================
 -- Indexes for performance optimization

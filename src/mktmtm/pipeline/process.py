@@ -38,6 +38,7 @@ from mktmtm.options.chain import (
     pick_strike_nearest_underlying,
     unadjusted_spot_from_bhavcopy,
 )
+from mktmtm.options.dealer_exposure import gamma_flip_spot
 from mktmtm.options.pricing import black_scholes_greeks, implied_volatility_bisection
 from mktmtm.options.volatility import compute_yz_rolling_vol
 from mktmtm.progress import track
@@ -459,6 +460,16 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                 )
                 timestamps[date_key]["option_chain"] = _build_chain_rows(
                     options_data, symbol, spot_price, date_key, r_decimal
+                )
+
+                # Phase 3 (Task 3.3) — gamma-flip spot level, mirroring
+                # storage/etl.py (hard rule 1): net-GEX zero crossing on the
+                # raw-basis grid S·[0.90..1.10]; null = no crossing in range.
+                timestamps[date_key]["gamma_flip"] = gamma_flip_spot(
+                    timestamps[date_key]["option_chain"],
+                    spot_price,
+                    date_key,
+                    r_decimal,
                 )
 
                 # ATM strangle selection across the next 3 monthly expiries.

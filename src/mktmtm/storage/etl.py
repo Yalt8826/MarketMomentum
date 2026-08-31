@@ -38,6 +38,7 @@ from mktmtm.options.chain import (
     pick_strike_nearest_underlying,
     unadjusted_spot_from_bhavcopy,
 )
+from mktmtm.options.dealer_exposure import gamma_flip_spot
 from mktmtm.options.pricing import black_scholes_greeks, implied_volatility_bisection
 from mktmtm.options.volatility import compute_yz_rolling_vol
 from mktmtm.pipeline.process import discover_bhavcopy_files, load_spot_prices
@@ -541,6 +542,18 @@ def _process_symbol(
             rec["ce"]["ivp"], rec["ce"]["ivr"] = ce_stat[dt]["ivp"], ce_stat[dt]["ivr"]
         if dt in pe_stat:
             rec["pe"]["ivp"], rec["pe"]["ivr"] = pe_stat[dt]["ivp"], pe_stat[dt]["ivr"]
+        # ───────── gamma-flip level (Phase 3, Task 3.3) ─────────
+        # Spot at which net dealer GEX crosses zero, on the raw-basis grid
+        # S·[0.90..1.10] (hard rule 3). Computed here at ETL time — not in
+        # SQL — because the chain is already in memory and SQL would
+        # re-evaluate it 21× per symbol-day. NULL (None) = no crossing in
+        # range; a real state, not a failure. Mirrored in process.py.
+        rec["gamma_flip"] = gamma_flip_spot(
+            rec.get("option_chain") or [],
+            rec.get("underlying_price"),
+            k,
+            (rec.get("interest_rate") or 0) / 100.0,
+        )
 
     # ───────── write to DB ─────────
     if time_map:

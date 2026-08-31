@@ -45,7 +45,7 @@ _INSERT = (
     "INSERT INTO option_metrics ("
     "symbol,date,underlying_price,underlying_price_adj,interest_rate,strike_price,"
     "expiry_30d,expiry_60d,expiry_90d,upcoming_earning_date,"
-    "rv_yz,ce,pe,option_chain,extras) VALUES %s "
+    "rv_yz,gamma_flip,ce,pe,option_chain,extras) VALUES %s "
     "ON CONFLICT (symbol,date) DO UPDATE SET "
     "underlying_price       = EXCLUDED.underlying_price,"
     "underlying_price_adj   = EXCLUDED.underlying_price_adj,"
@@ -56,6 +56,7 @@ _INSERT = (
     "expiry_90d             = EXCLUDED.expiry_90d,"
     "upcoming_earning_date  = EXCLUDED.upcoming_earning_date,"
     "rv_yz                  = EXCLUDED.rv_yz,"
+    "gamma_flip             = EXCLUDED.gamma_flip,"
     "ce                     = EXCLUDED.ce,"
     "pe                     = EXCLUDED.pe,"
     "option_chain           = EXCLUDED.option_chain,"
@@ -183,6 +184,7 @@ class DBWriter:
             _d(d.get("expiry_90d")),
             _d(d.get("upcoming_earning_date")),
             d.get("rv_yz"),
+            d.get("gamma_flip"),
             Json(clean_for_json(d.get("ce") or {})),
             Json(clean_for_json(d.get("pe") or {})),
             Json(clean_for_json(d.get("option_chain") or [])),
