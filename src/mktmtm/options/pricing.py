@@ -26,10 +26,18 @@ def black_scholes_greeks(
 ) -> dict[str, float]:
     """Computes Black-Scholes Greeks for an option.
 
-    Returns a dictionary of: delta, gamma, theta, vega, rho
+    Returns a dictionary of: delta, gamma, theta, vega, rho, vanna, charm
     """
     if T <= 0 or sigma <= 0:
-        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+        return {
+            "delta": 0.0,
+            "gamma": 0.0,
+            "theta": 0.0,
+            "vega": 0.0,
+            "rho": 0.0,
+            "vanna": 0.0,
+            "charm": 0.0,
+        }
 
     d1 = (math.log(S / K) + (r - q + 0.5 * sigma**2) * T) / (sigma * math.sqrt(T))
     d2 = d1 - sigma * math.sqrt(T)
@@ -68,12 +76,33 @@ def black_scholes_greeks(
     rho_put = -K * T * e_neg_rT * phi(-d2) / 100
     rho = rho_call if is_call else rho_put
 
+    # Vanna (∂delta/∂σ) — identical for calls and puts (d1/d2 do not depend on
+    # the option type): vanna = -e^{-qT}·φ(d1)·d2/σ.  At q = 0 this is the
+    # classic -φ(d1)·d2/σ.
+    vanna = -e_neg_qT * phi_pdf(d1) * d2 / sigma
+
+    # Charm (delta decay, -∂delta/∂T).  The leading term is common to calls and
+    # puts; the dividend terms carry the sign difference:
+    #   charm_call = lead + q·e^{-qT}·N(d1)
+    #   charm_put  = lead - q·e^{-qT}·N(-d1)
+    # so charm_put = charm_call - q·e^{-qT}; at q = 0 both collapse to the
+    # issue-specified -φ(d1)·(2rT - d2·σ√T) / (2T·σ√T).
+    sqrt_T = math.sqrt(T)
+    charm_lead = -e_neg_qT * phi_pdf(d1) * (2 * (r - q) * T - d2 * sigma * sqrt_T) / (2 * T * sigma * sqrt_T)
+    charm = (
+        charm_lead + q * e_neg_qT * phi(d1)
+        if is_call
+        else charm_lead - q * e_neg_qT * phi(-d1)
+    )
+
     return {
         "delta": delta,
         "gamma": gamma,
         "theta": theta,
         "vega": vega,
         "rho": rho,
+        "vanna": vanna,
+        "charm": charm,
     }
 
 
