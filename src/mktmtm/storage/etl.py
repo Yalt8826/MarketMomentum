@@ -240,6 +240,77 @@ def _iv_stats(
     )
 
 
+def _build_chain_rows(
+    options_data: pd.DataFrame,
+    symbol: str,
+    spot_price: float,
+    date_key: str,
+    r_decimal: float,
+) -> list[dict[str, Any]]:
+    """Snapshot every option row of ``symbol`` with IV + the four chain Greeks.
+
+    Mirrors ``pipeline.process._build_chain_rows`` (hard rule 1): same IV
+    bisection, same Black-Scholes Greeks, same zero-fallback semantics. The
+    anti-divergence test (``tests/unit/test_chain_greeks.py``) keeps the two
+    engines byte-identical on the same fixture input.
+
+    The chain dict carries ``delta``/``gamma``/``vanna``/``charm`` so Phase 3
+    can aggregate dealer exposure in SQL over ``jsonb_array_elements``. Rows
+    whose IV does not converge keep the historic ``delta = 0.0`` fallback for
+    every Greek — no ``None`` here: ``delta`` is consumed by the backtester
+    and by ``idx_ce_delta``.
+    """
+    chain_rows: list[dict[str, Any]] = []
+    for _, row in options_data.iterrows():
+        if row["INSTRUMENT"] not in ("OPTSTK", "OPTIDX") or row["SYMBOL"] != symbol:
+            continue
+        try:
+            expiry = pd.to_datetime(row["EXPIRY_DT"]).strftime("%d-%b-%Y")
+            t_row = _safe_T(date_key, expiry)
+            iv = _iv_safe(
+                market_price=float(row["SETTLE_PR"]),
+                S=float(spot_price),
+                K=float(row["STRIKE_PR"]),
+                T=t_row,
+                r=r_decimal,
+                is_call=(row["OPTION_TYP"] == "CE"),
+            )
+            greeks: dict[str, float] = {"delta": 0.0, "gamma": 0.0, "vanna": 0.0, "charm": 0.0}
+            if t_row > 0 and iv is not None and iv > 0:
+                with suppress(Exception):
+                    greeks = black_scholes_greeks(
+                        float(spot_price),
+                        float(row["STRIKE_PR"]),
+                        t_row,
+                        r_decimal,
+                        iv / 100,
+                        is_call=(row["OPTION_TYP"] == "CE"),
+                    )
+            chain_rows.append(
+                dict(
+                    expiry=expiry,
+                    strike=float(row["STRIKE_PR"]),
+                    type=row["OPTION_TYP"],
+                    settle=float(row["SETTLE_PR"]),
+                    open=float(row["OPEN"]),
+                    high=float(row["HIGH"]),
+                    low=float(row["LOW"]),
+                    close=float(row["CLOSE"]),
+                    volume=int(row["CONTRACTS"]),
+                    oi=_oi_int(row.get("OPEN_INT")),
+                    chg_oi=_oi_int(row.get("CHG_IN_OI")),
+                    iv=iv,
+                    delta=greeks["delta"],
+                    gamma=greeks["gamma"],
+                    vanna=greeks["vanna"],
+                    charm=greeks["charm"],
+                )
+            )
+        except (TypeError, ValueError, KeyError):
+            continue  # skip malformed rows
+    return chain_rows
+
+
 # ═════════════════════════ main worker ═════════════════════════════════════
 def _process_symbol(
     sym: str,
@@ -340,46 +411,9 @@ def _process_symbol(
         )
 
         # full chain snapshot – useful later
-        for _, row in opts.iterrows():
-            expiry = pd.to_datetime(row["EXPIRY_DT"]).strftime("%d-%b-%Y")
-            t_row = _safe_T(date_key, expiry)
-            iv = _iv_safe(
-                market_price=float(row["SETTLE_PR"]),
-                S=float(spot_raw),
-                K=float(row["STRIKE_PR"]),
-                T=t_row,
-                r=r_dec,
-                is_call=(row["OPTION_TYP"] == "CE"),
-            )
-            delta = 0.0
-            if t_row > 0 and iv is not None and iv > 0:
-                with suppress(Exception):
-                    delta = black_scholes_greeks(
-                        float(spot_raw),
-                        float(row["STRIKE_PR"]),
-                        t_row,
-                        r_dec,
-                        iv / 100,
-                        is_call=(row["OPTION_TYP"] == "CE"),
-                    )["delta"]
-
-            rec["option_chain"].append(
-                dict(
-                    expiry=expiry,
-                    strike=float(row["STRIKE_PR"]),
-                    type=row["OPTION_TYP"],
-                    settle=float(row["SETTLE_PR"]),
-                    open=float(row["OPEN"]),
-                    high=float(row["HIGH"]),
-                    low=float(row["LOW"]),
-                    close=float(row["CLOSE"]),
-                    volume=int(row["CONTRACTS"]),
-                    oi=_oi_int(row.get("OPEN_INT")),
-                    chg_oi=_oi_int(row.get("CHG_IN_OI")),
-                    iv=iv,
-                    delta=delta,
-                )
-            )
+        rec["option_chain"] = _build_chain_rows(
+            opts, sym, float(spot_raw), date_key, r_dec
+        )
 
         picked = pick_strike_nearest_underlying(spot_raw, opts)
         if not picked:

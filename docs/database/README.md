@@ -212,7 +212,9 @@ every document column.
     "gamma": 0.0021,
     "theta": -0.084,
     "vega": 0.312,
-    "rho": 0.045
+    "rho": 0.045,
+    "vanna": -0.0312,        // ∂delta/∂σ — vol-triggered hedging flow (same for CE/PE)
+    "charm": -0.0051         // ∂delta/∂t — delta decay from time passing (sign by side)
   }
 }
 ```
@@ -236,14 +238,21 @@ invalid.
     "close": 142.35,
     "volume": 31890,         // CONTRACTS
     "iv": 14.23,             // bisection implied vol (%), 0.0 when uncomputable
-    "delta": 0.498           // Black–Scholes delta
+    "delta": 0.498,          // Black–Scholes delta
+    "gamma": 0.0021,         // Black–Scholes gamma (per 1% spot move, S-units)
+    "vanna": -0.0312,        // ∂delta/∂σ — vol-triggered hedging flow
+    "charm": -0.0051         // ∂delta/∂t — delta decay from time passing
   }
   // ...one element per option row of the symbol that day
 ]
 ```
 
 Malformed rows (missing/NaN fields) are skipped at build time, so the array
-contains only computable rows.
+contains only computable rows. Every Greek is `0.0` (never `NULL`/`NaN`)
+when IV does not converge or `T <= 0` — `delta` is consumed by the
+backtester and by `idx_ce_delta`, so the zero-fallback is part of the
+contract. New keys need no migration: `option_chain` is `JSONB` indexed
+with `jsonb_path_ops` (see §4.1).
 
 ### 6.3 `extras` — reserved
 

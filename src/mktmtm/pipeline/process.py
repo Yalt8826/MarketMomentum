@@ -251,7 +251,19 @@ def _build_chain_rows(
     date_key: str,
     r_decimal: float,
 ) -> list[dict[str, Any]]:
-    """Snapshot every option row of ``symbol`` with IV + delta computed."""
+    """Snapshot every option row of ``symbol`` with IV + the four chain Greeks.
+
+    Mirrors ``storage.etl._build_chain_rows`` (hard rule 1): same IV
+    bisection, same Black-Scholes Greeks, same zero-fallback semantics. The
+    anti-divergence test (``tests/unit/test_chain_greeks.py``) keeps the two
+    engines byte-identical on the same fixture input.
+
+    The chain dict carries ``delta``/``gamma``/``vanna``/``charm`` so Phase 3
+    can aggregate dealer exposure in SQL over ``jsonb_array_elements``. Rows
+    whose IV does not converge fall back to ``0.0`` for every Greek — no
+    ``None``: the chain's ``delta`` is consumed by the backtester and by
+    ``idx_ce_delta``.
+    """
     chain_rows: list[dict[str, Any]] = []
     for _, row in options_data.iterrows():
         if row["INSTRUMENT"] not in ("OPTSTK", "OPTIDX") or row["SYMBOL"] != symbol:
@@ -267,18 +279,21 @@ def _build_chain_rows(
                 r=r_decimal,
                 is_call=(row["OPTION_TYP"] == "CE"),
             )
-            delta_row = (
-                black_scholes_greeks(
+            greeks_row: dict[str, float] = {
+                "delta": 0.0,
+                "gamma": 0.0,
+                "vanna": 0.0,
+                "charm": 0.0,
+            }
+            if iv_row is not None:
+                greeks_row = black_scholes_greeks(
                     spot_price,
                     float(row["STRIKE_PR"]),
                     t_row,
                     r_decimal,
                     iv_row,
                     is_call=(row["OPTION_TYP"] == "CE"),
-                )["delta"]
-                if iv_row is not None
-                else None
-            )
+                )
             chain_rows.append(
                 {
                     "expiry": expiry_str,
@@ -293,7 +308,10 @@ def _build_chain_rows(
                     "oi": _oi_int(row.get("OPEN_INT")),
                     "chg_oi": _oi_int(row.get("CHG_IN_OI")),
                     "iv": (iv_row * 100.0) if iv_row is not None else None,
-                    "delta": delta_row,
+                    "delta": greeks_row["delta"],
+                    "gamma": greeks_row["gamma"],
+                    "vanna": greeks_row["vanna"],
+                    "charm": greeks_row["charm"],
                 }
             )
         except (TypeError, ValueError, KeyError):
@@ -492,6 +510,8 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                         "theta": 0.0,
                         "vega": 0.0,
                         "rho": 0.0,
+                        "vanna": 0.0,
+                        "charm": 0.0,
                     }
 
                 if pe_iv_30 is not None and pe_iv_30 > 0 and t_30 > 0:
@@ -510,6 +530,8 @@ def main(settings_: Settings | None = None, limit_days: int | None = None) -> Pa
                         "theta": 0.0,
                         "vega": 0.0,
                         "rho": 0.0,
+                        "vanna": 0.0,
+                        "charm": 0.0,
                     }
 
                 timestamps[date_key].update(
