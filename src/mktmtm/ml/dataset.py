@@ -1,8 +1,10 @@
 """ML dataset builder: ``option_metrics`` -> ``ml_dataset`` (features + targets).
 
 Reads the enriched fact table, derives the supervised targets (next-day
-return / direction, per-symbol forward shift) plus the feature set described
-in ``docs/models/data-understanding-report.md``, and writes the result to the
+return / direction plus the Phase-5 volatility targets — absolute return,
+forward 5-day realized vol, IV change, vol-risk premium — all per-symbol
+forward shifts) plus the feature set described in
+``docs/models/data-understanding-report.md``, and writes the result to the
 ``ml_dataset`` table (PostgreSQL) with an optional parquet export.
 
 Idempotent: ``write_dataset`` upserts on ``(symbol, date)``, so re-running
@@ -67,7 +69,16 @@ TIER3_COLUMNS = [
     "chain_breadth",
 ]
 
-TARGET_COLUMNS = ["next_day_return", "next_day_direction"]
+TARGET_COLUMNS = [
+    "next_day_return",
+    "next_day_direction",
+    # Phase 5 — volatility targets (all on the adjusted basis, hard rule 3;
+    # all NULL on each symbol's most recent day(s), hard rule 5).
+    "next_day_abs_return",
+    "next_day_rv_5d",
+    "next_day_iv_chg",
+    "next_day_vrp",
+]
 
 DATASET_COLUMNS = (
     IDENTITY_COLUMNS + LEVEL_COLUMNS + CE_PE_COLUMNS + TIER2_COLUMNS
@@ -83,6 +94,11 @@ _GREEK_KEYS = ("delta", "gamma", "theta", "vega", "rho")
 _MAX_ABS_DAILY_RETURN = 0.20
 
 _MOMENTUM_PERIODS = (1, 5, 10, 20)
+
+# Phase 5 target windows: forward 5-day realized vol is annualized at 252
+# trading days, matching the house convention (options/volatility.py).
+_RV_5D_WINDOW = 5
+_TRADING_DAYS = 252.0
 
 # Chain aggregates are computed in SQL (jsonb is C-speed there; a python pass
 # over ~320M chain elements would take minutes). Each lateral join re-parses
@@ -319,8 +335,10 @@ def screen_corporate_actions(
     model (a −65% observation is a 40-sigma event in a σ≈1.6% series).
 
     For each flagged jump at row ``i`` this blanks ``ret_Nd`` over ``i..i+N-1``
-    (the whole contaminated lookback window) and the target on row ``i-1`` (the
-    label that would otherwise "predict" the corporate action).
+    (the whole contaminated lookback window), the target on row ``i-1`` (the
+    label that would otherwise "predict" the corporate action), and — for the
+    forward-5d RV target — every row ``i-5..i-1`` whose forward window contains
+    the jump.
 
     Requires ``(symbol, date)`` sort order. Logs every flagged row — a silent
     filter here is how survivorship-style bias creeps in.
@@ -360,9 +378,16 @@ def screen_corporate_actions(
         out.loc[contaminated, col] = np.nan
 
     # the label on the row *before* the jump spans the corporate action
-    for col in ("next_day_return", "next_day_direction"):
+    for col in TARGET_COLUMNS:
         if col in out.columns:
             out.loc[label_spans_jump, col] = np.nan
+
+    # a jump anywhere in the *next* 5 rows corrupts the forward RV window
+    if "next_day_rv_5d" in out.columns:
+        contaminated_fwd = by_symbol.transform(
+            lambda s, w=_RV_5D_WINDOW: s.rolling(w, min_periods=1).max().shift(-w)
+        ).astype(bool)
+        out.loc[contaminated_fwd, "next_day_rv_5d"] = np.nan
 
     logger.warning(
         "Corporate-action screen: flagged %d row(s) above |%.0f%%|; "
@@ -370,6 +395,37 @@ def screen_corporate_actions(
         n_flagged, threshold * 100,
     )
     return out
+
+
+def _assert_recomputed(
+    ordered: pd.DataFrame, col: str, recomputed: pd.Series[Any], atol: float
+) -> None:
+    """Raise unless ``col`` matches ``recomputed`` in both values and NaN mask.
+
+    The mask check is what catches a shifted window: a target shifted by one
+    row leaves values where the true forward window is NULL (and vice versa) —
+    exactly the leak mode this validator exists to trip. ``ordered`` must be
+    sorted by ``(symbol, date)`` and index-reset.
+    """
+    stored = ordered[col]
+    if not stored.notna().equals(recomputed.notna()):
+        n_diff = int((stored.notna() != recomputed.notna()).sum())
+        raise ValueError(
+            f"look-ahead check FAILED: {col} has a different NULL pattern than its "
+            f"recomputation on {n_diff} rows — the window is shifted (a forward-5d "
+            f"target needs 5 trailing NULLs per symbol, not 1)."
+        )
+    both = stored.notna() & recomputed.notna()
+    if not both.any():
+        return
+    dev = (stored[both] - recomputed[both]).abs()
+    max_dev = float(dev.max())
+    if max_dev > atol:
+        n_bad = int((dev > atol).sum())
+        raise ValueError(
+            f"look-ahead check FAILED: {col} deviates from its recomputation on "
+            f"{n_bad}/{int(both.sum())} rows (max |diff| = {max_dev:.3e})."
+        )
 
 
 def validate_no_lookahead(df: pd.DataFrame, atol: float = 1e-9) -> None:
@@ -380,10 +436,16 @@ def validate_no_lookahead(df: pd.DataFrame, atol: float = 1e-9) -> None:
     trivial 100%-accuracy rule). That bug was obvious at 21 days because the
     corruption was a clean reversal; at 2500 days a partial scramble would look
     like a merely excellent model. See docs/data/ml-dataset-report.md §2.
+
+    Phase 5 extension: every volatility target is recomputed from the raw
+    (adjusted) series and must match in both values and NULL pattern — so a
+    shifted ``next_day_rv_5d`` (5 trailing NULLs required, not 1) or an
+    aliased ``next_day_abs_return`` / ``next_day_iv_chg`` / ``next_day_vrp``
+    fails the build instead of silently leaking into every fold.
     """
     if "ret_1d" not in df.columns or df.empty:
         return
-    ordered = df.sort_values(["symbol", "date"])
+    ordered = df.sort_values(["symbol", "date"]).reset_index(drop=True)
     truth = ordered.groupby("symbol", sort=False)["underlying_price"].pct_change(1)
     stored = ordered["ret_1d"]
     both = stored.notna() & truth.notna()
@@ -412,14 +474,72 @@ def validate_no_lookahead(df: pd.DataFrame, atol: float = 1e-9) -> None:
                     f"{leak:+.4f}. A backward return cannot track the forward one; "
                     f"this indicates target leakage."
                 )
+
+    # Phase 5 — every new target must equal its recomputation from the raw
+    # (adjusted) price / IV series, values and NULL mask alike.
+    if "ce_iv_30" in ordered.columns:
+        if (
+            "next_day_abs_return" in ordered.columns
+            and "next_day_return" in ordered.columns
+        ):
+            _assert_recomputed(
+                ordered, "next_day_abs_return", ordered["next_day_return"].abs(), atol
+            )
+        if "next_day_iv_chg" in ordered.columns:
+            recomputed_iv = (
+                ordered.groupby("symbol", sort=False)["ce_iv_30"].shift(-1)
+                - ordered["ce_iv_30"]
+            )
+            _assert_recomputed(ordered, "next_day_iv_chg", recomputed_iv, atol)
+        if "next_day_vrp" in ordered.columns and "next_day_abs_return" in ordered.columns:
+            recomputed_vrp = ordered["next_day_abs_return"] - ordered["ce_iv_30"] / (
+                100.0 * np.sqrt(_TRADING_DAYS)
+            )
+            _assert_recomputed(ordered, "next_day_vrp", recomputed_vrp, atol)
+    if "next_day_rv_5d" in ordered.columns:
+        _assert_recomputed(ordered, "next_day_rv_5d", _forward_rv_5d(ordered), atol)
+
     logger.info("Look-ahead check passed (max |ret_1d deviation| = %.2e)", max_dev)
 
 
-def _add_targets(df: pd.DataFrame) -> pd.DataFrame:
-    """Supervised targets: next-day return + binary direction (per symbol).
+def _forward_rv_5d(df: pd.DataFrame) -> pd.Series[Any]:
+    """Annualized close-to-close realized vol of the *next 5* returns, per symbol.
 
-    The most recent day of each symbol keeps NaN targets — there is no
-    "tomorrow" yet; those rows are future-inference rows, never training rows.
+    Row ``t`` carries ``std(r_{t+1..t+5}) · sqrt(252)`` (ddof=1), i.e. a forward
+    window — so each symbol's last 5 rows are NaN (no full window ahead), not 1
+    like the other targets. Get this wrong and five days of future leak into
+    every fold.
+
+    Built on the adjusted close (hard rule 3). ``option_metrics`` persists only
+    the adjusted close series, not futures OHLC, so the estimator is
+    close-to-close — the same basis the house YZ estimator already rests on
+    (``options/volatility.py`` consumes Open/Close; High/Low are decorative).
+
+    Requires ``(symbol, date)`` sort order; returns a Series aligned to ``df``'s
+    index with the values in that sorted order (callers that need label
+    alignment pass an already-reset frame).
+    """
+    ordered = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+    daily_ret = ordered.groupby("symbol", sort=False)["underlying_price"].pct_change()
+    # per-symbol trailing std of the last 5 returns, then walk the window back
+    # 5 rows *within the symbol* so it becomes the std of the NEXT 5 returns.
+    ordered["_r"] = daily_ret
+    trailing = ordered.groupby("symbol", sort=False)["_r"].transform(
+        lambda s, w=_RV_5D_WINDOW: s.rolling(w, min_periods=w).std()
+    )
+    shifted: pd.Series[Any] = trailing.groupby(ordered["symbol"], sort=False).shift(
+        -_RV_5D_WINDOW
+    )
+    return shifted * float(np.sqrt(_TRADING_DAYS))
+
+
+def _add_targets(df: pd.DataFrame) -> pd.DataFrame:
+    """Supervised targets: next-day return, direction + Phase-5 vol targets.
+
+    All targets are per-symbol *forward* shifts: the most recent day of each
+    symbol keeps NaN (there is no "tomorrow" yet — those rows are future
+    inference rows, never training rows). ``next_day_rv_5d`` needs 5 trailing
+    NULLs per symbol, not 1, because its window spans 5 forward returns.
     """
     out = df.sort_values(["symbol", "date"]).reset_index(drop=True)
     g = out.groupby("symbol", sort=False)
@@ -427,6 +547,16 @@ def _add_targets(df: pd.DataFrame) -> pd.DataFrame:
     out["next_day_return"] = ret
     has_tomorrow = ret.notna()
     out["next_day_direction"] = np.where(has_tomorrow, (ret > 0).astype(int), np.nan)
+
+    # Phase 5 — volatility targets (adjusted basis, hard rule 3).
+    out["next_day_abs_return"] = ret.abs()
+    out["next_day_rv_5d"] = _forward_rv_5d(out)
+    out["next_day_iv_chg"] = g["ce_iv_30"].shift(-1) - out["ce_iv_30"]
+    # realized minus implied: iv is percent-scale (10.64 = 10.64%), so /100
+    # gives a decimal annual vol and /sqrt(252) the daily equivalent.
+    out["next_day_vrp"] = out["next_day_abs_return"] - out["ce_iv_30"] / (
+        100.0 * np.sqrt(_TRADING_DAYS)
+    )
     return out
 
 

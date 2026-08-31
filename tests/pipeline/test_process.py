@@ -119,7 +119,9 @@ def test_pipeline_produces_populated_nifty_timestamp(pipeline_settings: Settings
         assert block["iv_60"] > 0
         assert block["iv_90"] > 0
         assert block["volume"] > 0
-        assert set(block["greeks"]) == {"delta", "gamma", "theta", "vega", "rho"}
+        assert set(block["greeks"]) == {
+            "delta", "gamma", "theta", "vega", "rho", "vanna", "charm",
+        }
 
     # Single day -> YZ can't warm up, and the 252-day IV window needs at least
     # _IV_MIN_PERIODS (60) observations behind a point before it will report a

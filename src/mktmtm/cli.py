@@ -167,7 +167,9 @@ def make_dataset(
             typer.echo("option_metrics is empty — run fetch-bhavcopy/fetch-yahoo, process, etl first.")
             raise typer.Exit(code=1)
         written = write_dataset(conn, df)
-        labeled = int(df["next_day_return"].notna().sum())
+        from mktmtm.ml.dataset import TARGET_COLUMNS
+
+        labeled = int(df[[c for c in TARGET_COLUMNS if c in df.columns]].notna().any(axis=1).sum())
         typer.echo(f"Wrote {written} rows to ml_dataset ({labeled} with targets).")
         if not no_export:
             out = export_path or (settings.processed_data_dir / "ml_dataset.parquet")

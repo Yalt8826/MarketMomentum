@@ -2,10 +2,13 @@
 --  Table: ml_dataset
 --  Purpose: ML training matrix — one row per (symbol, trading day) with
 --           features derived from option_metrics plus the supervised targets
---           (next-day return / direction). Populated by `mktmtm make-dataset`.
+--           (next-day return / direction, and the Phase-5 volatility targets
+--           absolute return, forward 5-day realized vol, IV change, VRP).
+--           Populated by `mktmtm make-dataset`.
 --
---  Targets are NULL on the most recent day of each symbol (no "tomorrow"
+--  Targets are NULL on the most recent day(s) of each symbol (no "tomorrow"
 --  yet) — those rows are future-inference rows, never training rows.
+--  next_day_rv_5d is NULL on the last 5 days per symbol (forward 5-day window).
 --
 --  Column order mirrors src/mktmtm/ml/dataset.py DATASET_COLUMNS.
 -- ===================================================
@@ -62,6 +65,10 @@ CREATE TABLE IF NOT EXISTS ml_dataset (
     chain_breadth        DOUBLE PRECISION,
     next_day_return      DOUBLE PRECISION,
     next_day_direction   SMALLINT,
+    next_day_abs_return  DOUBLE PRECISION,
+    next_day_rv_5d       DOUBLE PRECISION,
+    next_day_iv_chg      DOUBLE PRECISION,
+    next_day_vrp         DOUBLE PRECISION,
     PRIMARY KEY (symbol, date)
 );
 
