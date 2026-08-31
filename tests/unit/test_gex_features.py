@@ -146,3 +146,83 @@ def _ctx(bar: _FakeBar):
         yield bar
 
     return _inner
+
+
+# ───────────────────────────── UPDATE SQL construction ──────────────────────
+
+
+class _CapturingCursor:
+    """Records the SQL + args execute_values would send (no DB)."""
+
+    def __init__(self) -> None:
+        self.sql: str | None = None
+        self.args: list[tuple[object, ...]] = []
+        self.template: str | None = None
+
+    def execute(self, sql: str, args: tuple[object, ...] | None = None) -> None:
+        self.sql = sql
+        if args:
+            self.args = list(args)
+
+    def __enter__(self) -> _CapturingCursor:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+
+class _CapturingConn:
+    """Connection whose cursor captures the UPDATE; commit/close are no-ops."""
+
+    def __init__(self) -> None:
+        self.cursor_ctx = _CapturingCursor()
+
+    def cursor(self) -> _CapturingCursor:
+        return self.cursor_ctx
+
+    def commit(self) -> None:
+        pass
+
+    def close(self) -> None:
+        pass
+
+
+def test_update_gex_columns_casts_values(monkeypatch) -> None:
+    """The UPDATE must cast every VALUES column explicitly.
+
+    Regression: execute_values with an untyped VALUES list fails when a GEX
+    column is all-NULL (gex before gamma lands in the chain) — Postgres infers
+    text and the SET breaks. The per-row template must carry the casts.
+    """
+    def fake_execute_values(cur, sql, rows, template=None, page_size=100):  # type: ignore[no-untyped-def]
+        cur.sql = sql
+        cur.args = [tuple(r) for r in rows]
+        cur.template = template
+
+    monkeypatch.setattr("mktmtm.gex_features.execute_values", fake_execute_values)
+    conn = _CapturingConn()
+    df = pd.DataFrame(
+        {
+            "symbol": ["AAA", "AAA"],
+            "date": pd.to_datetime(["2026-01-05", "2026-01-06"]),
+            "gex": [None, None],  # all-NULL column — the regression case
+            "dex": [1.0, 2.0],
+        }
+    )
+    from mktmtm.gex_features import _update_gex_columns
+
+    written = _update_gex_columns(conn, df)
+
+    assert written == 2
+    assert conn.cursor_ctx.sql is not None
+    assert "UPDATE ml_dataset m SET" in conn.cursor_ctx.sql
+    assert "FROM (VALUES %s) AS v(symbol, date, dex, gex)" in conn.cursor_ctx.sql
+    assert conn.cursor_ctx.template is not None
+    assert "%s::text" in conn.cursor_ctx.template  # symbol cast
+    assert "%s::date" in conn.cursor_ctx.template  # date cast
+    assert conn.cursor_ctx.template.count("%s::double precision") == 2  # gex + dex
+    # GEX_COLUMNS order is dex before gex; both are in the frame.
+    assert conn.cursor_ctx.args == [
+        ("AAA", pd.Timestamp("2026-01-05").date(), 1.0, None),
+        ("AAA", pd.Timestamp("2026-01-06").date(), 2.0, None),
+    ]
