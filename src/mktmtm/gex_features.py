@@ -79,14 +79,20 @@ def _update_gex_columns(conn: Any, df: pd.DataFrame) -> int:
         )
         for rec in df.to_dict("records")
     ]
-    assignments = ", ".join(f"m.{c} = v.{c}" for c in cols)
+    assignments = ", ".join(f"{c} = v.{c}" for c in cols)
+    # Per-row casts in the execute_values template: Postgres cannot infer a
+    # VALUES column that is all-NULL (e.g. gex before gamma lands in the
+    # chain) and would otherwise type it as text, breaking the SET.
+    template = "(" + ", ".join(
+        ["%s::text", "%s::date", *(["%s::double precision"] * len(cols))]
+    ) + ")"
     sql = (
         f"UPDATE ml_dataset m SET {assignments} "
         f"FROM (VALUES %s) AS v(symbol, date, {', '.join(cols)}) "
         "WHERE m.symbol = v.symbol AND m.date = v.date"
     )
     with conn.cursor() as cur:
-        execute_values(cur, sql, rows, page_size=1000)
+        execute_values(cur, sql, rows, template=template, page_size=1000)
     conn.commit()
     return len(rows)
 
