@@ -157,22 +157,31 @@ def make_dataset(
     import psycopg2
 
     from mktmtm.ml.dataset import build_dataset, export_parquet, write_dataset
+    from mktmtm.progress import progress_stage
     from mktmtm.storage.db import build_dsn
 
     syms = _parse_csv(limit_symbols, str)
     conn = psycopg2.connect(build_dsn())
     try:
-        df = build_dataset(conn, symbols=syms, limit_dates=limit_dates)
-        if df.empty:
-            typer.echo("option_metrics is empty — run fetch-bhavcopy/fetch-yahoo, process, etl first.")
-            raise typer.Exit(code=1)
-        written = write_dataset(conn, df)
-        labeled = int(df["next_day_return"].notna().sum())
-        typer.echo(f"Wrote {written} rows to ml_dataset ({labeled} with targets).")
-        if not no_export:
-            out = export_path or (settings.processed_data_dir / "ml_dataset.parquet")
-            export_parquet(df, out)
-            typer.echo(f"Parquet export: {out}")
+        with progress_stage(
+            "Building ML dataset from option_metrics", total=4, unit="steps"
+        ) as bar:
+            df = build_dataset(conn, symbols=syms, limit_dates=limit_dates)
+            bar.advance(label="query + features")
+            if df.empty:
+                typer.echo(
+                    "option_metrics is empty — run fetch-bhavcopy/fetch-yahoo, process, etl first."
+                )
+                raise typer.Exit(code=1)
+            written = write_dataset(conn, df)
+            bar.advance(label=f"write {written} rows")
+            labeled = int(df["next_day_return"].notna().sum())
+            typer.echo(f"Wrote {written} rows to ml_dataset ({labeled} with targets).")
+            if not no_export:
+                out = export_path or (settings.processed_data_dir / "ml_dataset.parquet")
+                export_parquet(df, out)
+                bar.advance(label="parquet export")
+                typer.echo(f"Parquet export: {out}")
     finally:
         conn.close()
 
@@ -334,3 +343,71 @@ def backtest(
 
 def main() -> None:
     app()
+
+
+@app.command(name="run-pipeline")
+def run_pipeline(
+    start_date: Annotated[
+        datetime | None,
+        typer.Option("--start-date", help="fetch-bhavcopy start date (YYYY-MM-DD)."),
+    ] = None,
+    end_date: Annotated[
+        datetime | None,
+        typer.Option("--end-date", help="fetch-bhavcopy end date (YYYY-MM-DD)."),
+    ] = None,
+    max_workers: Annotated[
+        int,
+        typer.Option("--max-workers", min=1, help="Download workers (fetch-bhavcopy)."),
+    ] = settings.max_workers,
+    limit_symbols: Annotated[
+        str | None,
+        typer.Option(
+            "--limit-symbols",
+            help="Comma-separated symbol subset for make-dataset (smoke runs).",
+        ),
+    ] = None,
+    limit_dates: Annotated[
+        int | None,
+        typer.Option(
+            "--limit-dates",
+            min=1,
+            help="Only the N most recent trading dates for make-dataset (smoke runs).",
+        ),
+    ] = None,
+    no_export: Annotated[
+        bool,
+        typer.Option("--no-export", help="Skip the make-dataset parquet export."),
+    ] = False,
+    no_normalize: Annotated[
+        bool,
+        typer.Option(
+            "--no-normalize", help="Skip per-date rank normalization in train-direction."
+        ),
+    ] = False,
+    skip: Annotated[
+        str | None,
+        typer.Option(
+            "--skip",
+            help="Comma-separated stages to skip: fetch,preparse,etl,dataset,train.",
+        ),
+    ] = None,
+) -> None:
+    """Run the full data + training pipeline with staged progress UI.
+
+    Executes fetch-bhavcopy, preparse-bhavcopy, etl, make-dataset and
+    train-direction in sequence, each with a live progress bar (or log lines
+    when stderr isn't a TTY) and a results summary table at the end. Equivalent
+    to running the five commands in a row — each stage reuses the same code.
+    """
+    from mktmtm.pipeline_run import run_pipeline as _run
+
+    _run(
+        start_date=start_date,
+        end_date=end_date,
+        max_workers=max_workers,
+        limit_symbols=limit_symbols,
+        limit_dates=limit_dates,
+        no_export=no_export,
+        no_normalize=no_normalize,
+        skip=set(skip.split(",")) if skip and skip.strip() else None,
+    )
