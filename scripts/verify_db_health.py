@@ -65,13 +65,27 @@ else:
 catalog = set(load_fno_symbols())
 loaded = {r[0] for r in q("SELECT DISTINCT symbol FROM option_metrics")}
 absent = sorted(catalog - loaded)
-if absent:
+# A symbol with no Yahoo spot file cannot get underlying_price_adj, so it can
+# carry no returns or labels and is legitimately absent — Yahoo serves no working
+# ticker for FINNIFTY/MIDCPNIFTY and none at all for LTIM/PEL/TATAMOTORS. Deriving
+# the exemption from the files on disk (rather than hardcoding a list) keeps this
+# honest if Yahoo coverage changes either way. Anything absent *despite* having
+# spot data is the F8 failure mode and must fail the gate.
+_yahoo_dir = Path(settings.raw_data_dir) / "yahoo_finance"
+no_spot = {s for s in absent if not (_yahoo_dir / f"{s}_processed.json").exists()}
+unexplained = [s for s in absent if s not in no_spot]
+if unexplained:
     bad(
-        f"{len(absent)}/{len(catalog)} catalog symbols absent from option_metrics: "
-        f"{', '.join(absent[:12])}{' ...' if len(absent) > 12 else ''}"
+        f"{len(unexplained)}/{len(catalog)} catalog symbols absent from option_metrics "
+        f"despite having spot data: {', '.join(unexplained[:12])}"
+        f"{' ...' if len(unexplained) > 12 else ''}"
     )
 else:
-    ok(f"all {len(catalog)} catalog symbols present")
+    ok(
+        f"{len(loaded & catalog)}/{len(catalog)} catalog symbols present"
+        + (f" ({len(no_spot)} absent, no Yahoo spot source: {', '.join(sorted(no_spot))})"
+           if no_spot else "")
+    )
 
 print("\n" + "=" * 70)
 print("2) ML_DATASET (targets + coverage)")

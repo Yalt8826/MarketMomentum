@@ -2,11 +2,11 @@
 
 > **Scope:** audit of the completed five-year extraction/ETL build, the two defects it
 > exposed, the code changes made in response, and the procedure to re-run.
-> **Snapshot:** 2026-08-31. All figures verified live against PostgreSQL and
+> **Snapshot:** 2026-08-31. Pre-change figures verified live against PostgreSQL and
 > `data/processed/ml_dataset.parquet` before any change was made.
 > **Server:** PostgreSQL · `options_db` · `localhost:5432` · SSLMODE=disable.
 > **Branch:** `fix/etl-cache-offsets-and-spot-basis` — `dd11945` (pre-change checkpoint),
-> `1c20789` (fixes).
+> `1c20789` (fixes). Post-rebuild verification in §10.
 > **Companion:** `iv-integrity-audit.md` §7 records the same two defects as F8/F9 in the
 > numbered fix series; this report covers the change set end to end.
 
@@ -287,7 +287,81 @@ still wrong somewhere — that shape is the signature, and it is the thing to lo
 
 ---
 
-## 10. Not addressed (deliberate)
+## 10. Post-rebuild verification (2026-08-31)
+
+The pipeline was re-run: cache rebuilt, `TRUNCATE`, ETL (4h44m), `make-dataset`.
+Result against the §9 acceptance criteria — **all met**.
+
+| Criterion | Target | Actual |
+|---|---|---|
+| ETL summary line | `217/222 symbols` | **`ETL wrote rows for 217/222 symbols`** |
+| Zero-row symbols | Exactly the 5 without Yahoo spot | **FINNIFTY, LTIM, MIDCPNIFTY, PEL, TATAMOTORS** |
+| `option_metrics` | ~217 symbols / ~212k rows | **217 / 212,441** |
+| `\|strike/spot−1\| > 10%` | Near 0 in every year | **0.04% overall; 0.00 / 0.00 / 0.00 / 0.02 / 0.16 / 0.01 % by year** |
+| Usable `ce_iv_30` | ~93%, flat across years | **94.2%; unusable 4.8–7.5% flat, no slope** |
+| `corr(ce_iv_30, pe_iv_30)` | Strongly positive | **+0.8949** (−0.202 pre-fix) |
+| Median \|CE−PE\| gap | ~2 vol points | **1.01 vol points** (15.3 pre-fix) |
+| Health gate | PASS | **PASS** |
+
+### F8 confirmed fixed
+
+Every previously dropped or contaminated symbol now carries a full 1,254-day history
+with strikes tight to spot:
+
+| Symbol | Before | After | mean \|strike/spot−1\| |
+|---|---|---|---|
+| TATASTEEL | 103 rows, 0 of them its own | **1,254** | 0.0046 |
+| TATAPOWER | 209 rows, 0 of them its own | **1,254** | 0.0051 |
+| TCS / WIPRO / TITAN / ULTRACEMCO | dropped entirely | **1,254 each** | 0.0031–0.0040 |
+
+### F9 confirmed fixed
+
+The 2021 rows that previously matched an adjusted spot against unadjusted strikes:
+
+| Symbol | Before (raw spot → strike) | After (raw spot → strike) | `ce_iv_30` |
+|---|---|---|---|
+| KOTAKBANK | 333.02 → 1,280 | **1,663.25 → 1,660** | 21.4 (was NULL) |
+| NESTLEIND | 885.73 → 14,100 | **17,720.13 → 17,700** | 29.9 (was NULL) |
+| RELIANCE | 956.46 → 1,360 | **2,071.25 → 2,080** | 20.2 (was NULL) |
+
+`underlying_price_adj` stays on the Yahoo adjusted basis (331.06 / 837.95 / 938.67),
+which is what returns and labels need.
+
+### Dataset-level
+
+| Check | Before | After |
+|---|---|---|
+| Rows / symbols | 169,974 / 143 | **212,441 / 217** |
+| Usable IV + label | 139,677 (82.2%) | **200,020 (94.2%)** |
+| + all 8 core features non-null | 132,036 (77.7%) | **186,968 (88.0%)** |
+| `Decimal`/object columns | 6 | **0** |
+| Look-ahead check | PASS | **PASS**, `corr(ret_1d, next_day_return) = +0.0002` |
+| `\|next_day_return\| > 0.30` | 0 | **0** |
+| Class balance | 50.9% up, 0.498–0.531 by year | unchanged, healthy |
+
+**+54,932 usable training rows (+41%)** against the pre-fix build.
+
+### Two residuals, both benign
+
+- **IDEA shows 7.02% of rows above the 10% strike/spot threshold** — it trades at
+  ₹5.74–18.50 against a ₹1 strike grid, so at spot ₹7.10 the nearest strike (₹8.00) is
+  12.7% away by arithmetic. A *percentage* threshold is the wrong metric for a sub-₹20
+  underlying; this is not a basis mismatch. Every other symbol is ≤0.08%.
+- **2025 carries the highest unusable-IV rate (7.5%)** because the active symbol count
+  grew from 157 (2023) to 217 (2025); the newer F&O listings have thinner chains. NULL IV
+  is spread thin rather than concentrated — the worst symbol is 15.9%, and only 11 of 217
+  exceed 20%. The F4 gate drops these as genuine no-time-value/illiquid rows.
+
+### Gate calibration fix
+
+The catalog check as first written failed on the 5 symbols with no Yahoo spot source. It
+now derives the exemption from the files on disk — a symbol with no `_processed.json` can
+carry no `underlying_price_adj`, so it is legitimately absent — and fails only on symbols
+absent *despite* having spot data, which is the F8 failure mode.
+
+---
+
+## 11. Not addressed (deliberate)
 
 These are modelling decisions or pre-existing debt, left for the training loader:
 
