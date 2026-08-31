@@ -27,7 +27,14 @@ import xgboost as xgb
 
 from mktmtm.ml.features import load_training_frame
 from mktmtm.ml.metrics import daily_rank_ic, summarize
-from mktmtm.ml.splits import TRAIN_END, VALID_END, train_valid_test, walk_forward_splits
+from mktmtm.ml.splits import (
+    TRAIN_END,
+    VALID_END,
+    inner_holdout,
+    train_valid_test,
+    walk_forward_splits,
+)
+from mktmtm.progress import progress_stage, track
 
 logger = logging.getLogger(__name__)
 
@@ -102,21 +109,37 @@ def walk_forward_ics(
     reports the mean daily rank IC on that fold's validation rows. A model whose
     IC swings sign between folds has not found anything stable, whatever the
     average says.
+
+    Early stopping runs on an ``inner_holdout`` carved from the tail of each
+    fold's *training* window, never on the fold's validation rows. Stopping on
+    the rows you then score selects the tree count on the data being measured,
+    which inflates the fold IC and quietly turns the robustness check into an
+    in-sample one — the opposite of what it exists to test.
     """
     rows: list[dict[str, Any]] = []
-    for fold, (train_idx, valid_idx) in enumerate(
-        walk_forward_splits(frame["date"], n_splits=n_splits)
+    splits = walk_forward_splits(frame["date"], n_splits=n_splits)
+
+    def _fold_label(row: tuple[int, tuple[Any, Any]]) -> str:
+        fold, _ = row
+        return f"fold {fold + 1}/{n_splits}"
+
+    for fold, (train_idx, valid_idx) in track(
+        enumerate(splits),
+        "Walk-forward robustness",
+        total=n_splits,
+        label=_fold_label,
     ):
         train = frame.iloc[train_idx]
         valid = frame.iloc[valid_idx]
+        inner_train, inner_valid = inner_holdout(train)
         model = xgb.XGBClassifier(
             **PARAMS,
             early_stopping_rounds=EARLY_STOPPING_ROUNDS,
         )
         model.fit(
-            train[feature_names],
-            train["next_day_direction"],
-            eval_set=[(valid[feature_names], valid["next_day_direction"])],
+            inner_train[feature_names],
+            inner_train["next_day_direction"],
+            eval_set=[(inner_valid[feature_names], inner_valid["next_day_direction"])],
             verbose=False,
         )
         valid = valid.copy()
@@ -130,12 +153,15 @@ def walk_forward_ics(
                 "valid_start": valid["date"].min().isoformat(),
                 "valid_end": valid["date"].max().isoformat(),
                 "n_train_rows": int(len(train)),
+                "n_inner_train_rows": int(len(inner_train)),
+                "n_inner_valid_rows": int(len(inner_valid)),
                 "n_valid_rows": int(len(valid)),
                 "n_valid_dates": int(ic.shape[0]),
                 "mean_ic": float(ic.mean()),
                 "ic_std": float(ic.std(ddof=1)) if len(ic) > 1 else 0.0,
                 "icir": float(ic.mean() / ic.std(ddof=1)) if len(ic) > 1 and ic.std(ddof=1) > 0 else 0.0,
                 "best_iteration": int(model.best_iteration or 0),
+                "n_trees": int(model.best_iteration or 0) + 1,
             }
         )
     return pd.DataFrame(rows)
@@ -163,22 +189,27 @@ def run(
     on). ``normalize=False`` skips the per-date rank normalization in
     ``load_training_frame`` (Phase 8 CLI wiring).
     """
-    frame, feature_names = load_training_frame(
-        parquet_path=parquet_path, normalize=normalize
-    )
-    train_end_ts = TRAIN_END if train_end is None else pd.Timestamp(train_end)
-    valid_end_ts = VALID_END if valid_end is None else pd.Timestamp(valid_end)
-    train, valid, test = train_valid_test(
-        frame, train_end=train_end_ts, valid_end=valid_end_ts
-    )
-    del test  # TEST stays sealed: never fit on it
+    with progress_stage("Preparing training frame", total=4, unit="steps") as prep:
+        frame, feature_names = load_training_frame(
+            parquet_path=parquet_path, normalize=normalize
+        )
+        prep.advance(label="gate + normalize")
+        train_end_ts = TRAIN_END if train_end is None else pd.Timestamp(train_end)
+        valid_end_ts = VALID_END if valid_end is None else pd.Timestamp(valid_end)
+        train, valid, test = train_valid_test(
+            frame, train_end=train_end_ts, valid_end=valid_end_ts
+        )
+        del test  # TEST stays sealed: never fit on it
+        prep.advance(label=f"split {len(train)} train / {len(valid)} valid")
 
-    X_train = train[feature_names]
-    y_train = train["next_day_direction"]
-    X_valid = valid[feature_names]
-    y_valid = valid["next_day_direction"]
+        X_train = train[feature_names]
+        y_train = train["next_day_direction"]
+        X_valid = valid[feature_names]
+        y_valid = valid["next_day_direction"]
+        prep.advance(label="fit")
 
-    model, best_iteration = fit_direction_model(X_train, y_train, X_valid, y_valid)
+        model, best_iteration = fit_direction_model(X_train, y_train, X_valid, y_valid)
+        prep.advance(label=f"done — {best_iteration + 1} trees")
 
     valid_scored = valid.copy()
     valid_scored["pred"] = _predict_proba(model, X_valid)
@@ -207,7 +238,9 @@ def run(
         "params": PARAMS,
         "early_stopping_rounds": EARLY_STOPPING_ROUNDS,
         "best_iteration": best_iteration,
-        "n_estimators_fit": int(model.best_iteration or 0),
+        # predict_proba uses best_iteration + 1 trees; the booster's buffer holds
+        # EARLY_STOPPING_ROUNDS more that never score. Matches audit's n_trees.
+        "n_trees": best_iteration + 1,
         "n_features": len(feature_names),
         "normalize": normalize,
         "split": {
@@ -230,12 +263,15 @@ def run(
         "feature_names": feature_names,
     }
 
-    evaluation_dir.mkdir(parents=True, exist_ok=True)
-    candidates_dir.mkdir(parents=True, exist_ok=True)
-    eval_path = evaluation_dir / "xgb_direction_valid.json"
-    model_path = candidates_dir / f"xgb_direction_{date.today().isoformat()}.json"
-    eval_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
-    model.save_model(str(model_path))
+    with progress_stage("Writing artifacts", total=2, unit="files") as write_bar:
+        evaluation_dir.mkdir(parents=True, exist_ok=True)
+        candidates_dir.mkdir(parents=True, exist_ok=True)
+        eval_path = evaluation_dir / "xgb_direction_valid.json"
+        model_path = candidates_dir / f"xgb_direction_{date.today().isoformat()}.json"
+        eval_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        write_bar.advance(label="evaluation JSON")
+        model.save_model(str(model_path))
+        write_bar.advance(label="model file")
 
     logger.info("wrote %s and %s", eval_path, model_path)
     return report

@@ -79,7 +79,7 @@ def _fit_and_score(
     return model, best_iteration, summarize(scored)
 
 
-def _contiguous_features(feature_names: list[str]) -> list[str]:
+def _continuous_features(feature_names: list[str]) -> list[str]:
     """The continuous features in ``feature_names`` (everything but ``_is_null``)."""
     return [f for f in feature_names if not f.endswith("_is_null")]
 
@@ -109,7 +109,7 @@ def ablation_variants(
         raise ValueError("ablation requires TEST-era rows to exist (2026 data present)")
     del test  # the ablation never touches 2026
 
-    continuous = _contiguous_features(feature_names)
+    continuous = _continuous_features(feature_names)
     clean_mask = frame[continuous].notna().all(axis=1)
 
     variants: dict[str, dict[str, Any]] = {}

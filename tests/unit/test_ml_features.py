@@ -43,6 +43,7 @@ def _base_frame() -> pd.DataFrame:
 
 
 def _write(frame: pd.DataFrame, tmp_path: Path) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     path = tmp_path / "synth.parquet"
     frame.to_parquet(path, index=False)
     return path
@@ -184,3 +185,79 @@ def test_missing_required_column_raises(tmp_path: Path) -> None:
     frame = _base_frame().drop(columns=["skew_25d"])
     with pytest.raises(ValueError, match="skew_25d"):
         load_training_frame(_write(frame, tmp_path))
+
+
+# ──────────────────── feature_names pinning — inference stability ────────────────────
+
+
+def _frame_with_null_rate(col: str, rate: float) -> pd.DataFrame:
+    """20 dates x 3 symbols, with ``col`` NULL on exactly ``rate`` of rows."""
+    dates = pd.to_datetime([f"2024-01-{d:02d}" for d in range(1, 21)])
+    rows = [{"symbol": s, "date": d} for s, d in itertools.product(_SYMBOLS, dates)]
+    frame = _complete(rows)
+    frame["ce_iv_30"] = 15.0
+    frame["pe_iv_30"] = 18.0
+    frame["next_day_direction"] = 1.0
+    n_null = round(len(frame) * rate)
+    frame.loc[: n_null - 1, col] = np.nan
+    return frame
+
+
+def test_pin_keeps_the_feature_vector_stable_when_a_null_rate_moves(tmp_path: Path) -> None:
+    """The regression this guards: a NULL rate crossing 1% must not change the columns.
+
+    Unpinned, a feature at 5% NULL earns an ``_is_null`` companion and one at
+    0% does not — so the same model would see a different feature vector on a
+    refreshed dataset. Pinning holds the contract fixed either way.
+    """
+    victim = "ret_10d"
+    above = _write(_frame_with_null_rate(victim, 0.05), tmp_path / "above")
+    below = _write(_frame_with_null_rate(victim, 0.0), tmp_path / "below")
+
+    _, names_above = load_training_frame(parquet_path=above)
+    _, names_below = load_training_frame(parquet_path=below)
+    indicator = f"{victim}_is_null"
+    assert indicator in names_above, "5% NULL must earn an indicator unpinned"
+    assert indicator not in names_below, "0% NULL must not, unpinned — the instability"
+
+    # Pinned to the trained contract, the 0%-NULL dataset still produces it.
+    frame, names = load_training_frame(parquet_path=below, feature_names=names_above)
+    assert names == names_above
+    assert list(frame.columns[2 : 2 + len(names)]) == names_above
+    assert (frame[indicator] == 0).all(), "column present, correctly all-zero"
+
+
+def test_pin_drops_indicators_the_saved_model_never_saw(tmp_path: Path) -> None:
+    """An indicator that appears in new data but not in the contract is dropped."""
+    path = _write(_frame_with_null_rate("ret_10d", 0.05), tmp_path / "p")
+    _, unpinned = load_training_frame(parquet_path=path)
+    pinned_contract = [c for c in unpinned if c != "ret_10d_is_null"]
+
+    _, names = load_training_frame(parquet_path=path, feature_names=pinned_contract)
+    assert names == pinned_contract
+    assert "ret_10d_is_null" not in names
+
+
+def test_pin_preserves_caller_order(tmp_path: Path) -> None:
+    """The returned block is the pinned list, in the pinned order."""
+    path = _write(_frame_with_null_rate("ret_10d", 0.05), tmp_path / "p")
+    _, unpinned = load_training_frame(parquet_path=path)
+    shuffled = list(reversed(unpinned))
+
+    frame, names = load_training_frame(parquet_path=path, feature_names=shuffled)
+    assert names == shuffled
+    assert list(frame.columns[2 : 2 + len(names)]) == shuffled
+
+
+def test_pin_raises_on_a_feature_the_data_cannot_produce(tmp_path: Path) -> None:
+    path = _write(_frame_with_null_rate("ret_10d", 0.05), tmp_path / "p")
+    with pytest.raises(ValueError, match="cannot be produced"):
+        load_training_frame(parquet_path=path, feature_names=["not_a_real_feature"])
+
+
+def test_unpinned_default_is_unchanged(tmp_path: Path) -> None:
+    """Pinning is opt-in: omitting it reproduces the threshold-derived contract."""
+    path = _write(_frame_with_null_rate("ret_10d", 0.05), tmp_path / "p")
+    _, a = load_training_frame(parquet_path=path)
+    _, b = load_training_frame(parquet_path=path, feature_names=None)
+    assert a == b

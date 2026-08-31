@@ -74,13 +74,31 @@ def _gate_mask(frame: pd.DataFrame) -> pd.Series:
     )
 
 
-def _add_missingness_indicators(frame: pd.DataFrame, features: list[str]) -> list[str]:
+def _add_missingness_indicators(
+    frame: pd.DataFrame,
+    features: list[str],
+    pinned: list[str] | None = None,
+) -> list[str]:
     """Add ``<feature>_is_null`` int8 columns for features with a >1% NULL rate.
 
     Measured on the gated rows — the rows that actually reach the model — from
     the raw NaN state, before normalization touches anything. Returns the
     created column names, in ``features`` order.
+
+    When ``pinned`` is given it *replaces* the threshold as the selection rule:
+    exactly those indicators are built, whatever the observed NULL rate. This is
+    what keeps a saved model's feature vector stable — see ``load_training_frame``.
     """
+    if pinned is not None:
+        wanted = set(pinned)
+        built: list[str] = []
+        for col in features:
+            name = f"{col}_is_null"
+            if name in wanted:
+                frame[name] = frame[col].isna().astype(np.int8)
+                built.append(name)
+        return built
+
     indicators: list[str] = []
     for col in features:
         if frame[col].isna().mean() > NULL_RATE_THRESHOLD:
@@ -104,6 +122,7 @@ def load_training_frame(
     parquet_path: Path | None = None,
     gate: bool = True,
     normalize: bool = True,
+    feature_names: list[str] | None = None,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Return (frame, feature_names). Frame keeps symbol, date, both targets.
 
@@ -118,6 +137,22 @@ def load_training_frame(
     indicators (parent-feature order), then the two targets. ``feature_names``
     is the model feature list — the surviving continuous features plus the
     indicators — exactly the columns a Phase 3+ consumer should use as ``X``.
+
+    **Pinning.** By default the indicator set is *derived from the data*: a
+    feature earns an ``_is_null`` companion by exceeding ``NULL_RATE_THRESHOLD``
+    on the gated rows. That makes the feature vector a function of the dataset,
+    which is fine while training but unsafe at inference — ``ret_10d`` sits at a
+    1.2% NULL rate against a 1% threshold, so a modest data refresh would silently
+    add or drop a column and misalign a saved model. Pass ``feature_names`` (the
+    list recorded in the model's evaluation JSON) to pin the contract instead:
+    exactly those indicators are built regardless of observed rate, and the
+    returned frame's feature block is exactly that list, in that order.
+
+    Raises
+    ------
+    ValueError
+        If the parquet is missing a ``DATASET_COLUMNS`` column, or if a pinned
+        feature cannot be produced from it.
     """
     path = parquet_path if parquet_path is not None else _DEFAULT_PARQUET
     frame = pd.read_parquet(path)
@@ -136,9 +171,24 @@ def load_training_frame(
 
     kept = [c for c in FEATURE_COLUMNS if c not in DROP_COLUMNS]
     frame = frame.drop(columns=[c for c in DROP_COLUMNS if c in frame.columns])
-    indicators = _add_missingness_indicators(frame, kept)
+
+    pinned_indicators = (
+        None
+        if feature_names is None
+        else [c for c in feature_names if c.endswith("_is_null")]
+    )
+    indicators = _add_missingness_indicators(frame, kept, pinned=pinned_indicators)
     if normalize:
         _rank_normalize(frame, kept)
 
-    feature_names = [*kept, *indicators]
-    return frame[["symbol", "date", *feature_names, *TARGET_COLUMNS]], feature_names
+    resolved = [*kept, *indicators]
+    if feature_names is not None:
+        unproducible = [c for c in feature_names if c not in frame.columns]
+        if unproducible:
+            raise ValueError(
+                f"pinned feature_names cannot be produced from {path}: {unproducible}; "
+                "the parquet's DATASET_COLUMNS contract no longer matches the saved model"
+            )
+        resolved = list(feature_names)
+
+    return frame[["symbol", "date", *resolved, *TARGET_COLUMNS]], resolved

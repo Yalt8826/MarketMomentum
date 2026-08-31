@@ -34,7 +34,7 @@ VALID_START = pd.Timestamp("2025-01-01")
 VALID_END = pd.Timestamp("2025-12-31")
 TEST_START = pd.Timestamp("2026-01-01")
 
-__all__ = ["walk_forward_splits", "train_valid_test"]
+__all__ = ["walk_forward_splits", "train_valid_test", "inner_holdout"]
 
 
 def walk_forward_splits(
@@ -172,6 +172,53 @@ def train_valid_test(
                 f"valid_end {valid_end_ts.date()})"
             )
     return train, valid, test
+
+
+def inner_holdout(
+    train: pd.DataFrame,
+    frac: float = 0.2,
+    embargo_days: int = EMBARGO_DAYS,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Carve an early-stopping holdout out of the tail of a training window.
+
+    Returns ``(inner_train, inner_valid)``. The last ``frac`` of ``train``'s
+    unique dates become ``inner_valid``; the dates before them, minus an
+    ``embargo_days`` purge, become ``inner_train``.
+
+    This exists so a walk-forward fold can early-stop without touching the rows
+    it is then scored on. Selecting the tree count on the fold's own validation
+    set and reporting the score from that same set makes the fold IC
+    optimistically biased — the number stops being out-of-sample. Splitting the
+    tail off instead keeps the fold's validation rows untouched by any fitting
+    decision.
+
+    Raises
+    ------
+    ValueError
+        If ``frac`` is outside (0, 1), or ``train`` holds too few unique dates
+        to leave both sides non-empty after the purge.
+    """
+    if not 0.0 < frac < 1.0:
+        raise ValueError(f"frac must be in (0, 1), got {frac}")
+    if embargo_days < 0:
+        raise ValueError(f"embargo_days must be >= 0, got {embargo_days}")
+
+    unique = np.unique(train["date"].to_numpy())
+    n_valid = max(1, int(round(len(unique) * frac)))
+    cut = len(unique) - n_valid
+    if cut - embargo_days < 1:
+        raise ValueError(
+            f"train window has {len(unique)} unique dates — too few to carve a "
+            f"{frac:.0%} inner holdout with a {embargo_days}-date embargo"
+        )
+
+    valid_dates = unique[cut:]
+    train_dates = unique[: cut - embargo_days]
+    rows = train["date"].to_numpy()
+    return (
+        train[np.isin(rows, train_dates)],
+        train[np.isin(rows, valid_dates)],
+    )
 
 
 def _purge_tail(part: pd.DataFrame, embargo_days: int = EMBARGO_DAYS) -> pd.DataFrame:

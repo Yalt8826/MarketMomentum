@@ -21,6 +21,7 @@ from mktmtm.ml.splits import (
     TRAIN_START,
     VALID_END,
     VALID_START,
+    inner_holdout,
     train_valid_test,
     walk_forward_splits,
 )
@@ -235,3 +236,61 @@ def test_train_valid_test_rejects_invalid_boundaries() -> None:
     # a valid_end at/after the last data date leaves an empty TEST window
     with pytest.raises(ValueError, match="test split is empty"):
         train_valid_test(frame, valid_end=pd.Timestamp("2026-08-28"))
+
+
+# ─────────────────────── inner_holdout — early-stopping split ───────────────────────
+
+
+def test_inner_holdout_is_purged_and_disjoint() -> None:
+    """The holdout is the date tail, separated from inner-train by the embargo."""
+    train = _synthetic_frame()
+    inner_train, inner_valid = inner_holdout(train)
+
+    assert not inner_train.empty and not inner_valid.empty
+    _assert_embargo_gap(inner_train, inner_valid, EMBARGO_DAYS)
+
+    train_dates = set(inner_train["date"])
+    valid_dates = set(inner_valid["date"])
+    assert train_dates.isdisjoint(valid_dates)
+    # The holdout is the *tail*: every inner-valid date follows every inner-train date.
+    assert min(valid_dates) > max(train_dates)
+
+
+def test_inner_holdout_respects_frac() -> None:
+    """``frac`` selects that share of unique dates, not of rows."""
+    train = _synthetic_frame(n_symbols=4)
+    n_dates = train["date"].nunique()
+    _, inner_valid = inner_holdout(train, frac=0.25)
+    assert inner_valid["date"].nunique() == round(n_dates * 0.25)
+    # Every symbol on a held-out date comes along — no row-level split.
+    assert len(inner_valid) == inner_valid["date"].nunique() * 4
+
+
+def test_inner_holdout_never_touches_the_outer_valid_rows() -> None:
+    """Both inner sides stay inside the fold's own training window."""
+    frame = _synthetic_frame()
+    train_idx, valid_idx = next(iter(walk_forward_splits(frame["date"])))
+    train, valid = frame.iloc[train_idx], frame.iloc[valid_idx]
+
+    inner_train, inner_valid = inner_holdout(train)
+    outer_valid_dates = set(valid["date"])
+    assert set(inner_train["date"]).isdisjoint(outer_valid_dates)
+    assert set(inner_valid["date"]).isdisjoint(outer_valid_dates)
+
+
+def test_inner_holdout_rejects_bad_inputs() -> None:
+    train = _synthetic_frame()
+    for bad in (0.0, 1.0, -0.1, 1.5):
+        with pytest.raises(ValueError, match="frac must be in"):
+            inner_holdout(train, frac=bad)
+    with pytest.raises(ValueError, match="embargo_days must be >= 0"):
+        inner_holdout(train, embargo_days=-1)
+
+
+def test_inner_holdout_raises_when_window_too_short() -> None:
+    """A window with too few dates cannot yield both sides after the purge."""
+    short = pd.DataFrame(
+        {"symbol": "S0", "date": pd.to_datetime(["2024-01-02", "2024-01-03"])}
+    )
+    with pytest.raises(ValueError, match="too few to carve"):
+        inner_holdout(short, frac=0.5)

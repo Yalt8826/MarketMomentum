@@ -86,16 +86,30 @@ Fit on TRAIN, early-stopped on VALID AUC; scored on VALID with the Phase 4
 
 ### Walk-forward robustness (Phase 6, 5 folds over TRAIN+VALID era)
 
-| Fold | Valid window | Mean IC | Fold ICIR | best_iteration |
-|---|---|---|---|---|
-| 0 | 2022-08 → 2023-04 | +0.0102 | 0.10 | 0 |
-| 1 | 2023-04 → 2023-12 | +0.0285 | 0.24 | 51 |
-| 2 | 2024-01 → 2024-08 | **−0.0164** | −0.08 | 0 |
-| 3 | 2024-08 → 2025-04 | +0.0292 | 0.15 | 8 |
-| 4 | 2025-05 → 2025-12 | +0.0402 | 0.51 | 1290 |
+Corrected 2026-08-31. The original run early-stopped each fold on that fold's
+*own* validation rows and then scored them, so the tree count was chosen on the
+data being measured and every fold IC was optimistically biased. Folds now
+early-stop on an `inner_holdout` carved from the tail of the fold's training
+window (`ml/splits.py`), leaving the validation rows untouched by any fitting
+decision.
 
-Mean fold IC +0.0183 (min −0.0164, max +0.0402). Fold 2 goes negative — the
-edge is not present in every regime (see Known limitations).
+| Fold | Valid window | Mean IC | Trees | Superseded (biased) IC |
+|---|---|---|---|---|
+| 0 | 2022-08 → 2023-04 | +0.0180 | 106 | +0.0102 |
+| 1 | 2023-04 → 2023-12 | +0.0189 | 137 | +0.0285 |
+| 2 | 2024-01 → 2024-08 | +0.0027 | 584 | −0.0164 |
+| 3 | 2024-08 → 2025-04 | +0.0030 | 1072 | +0.0292 |
+| 4 | 2025-05 → 2025-12 | +0.0034 | 23 | +0.0402 |
+
+Mean fold IC **+0.0092** (min +0.0027, max +0.0189) — **half** the +0.0183 the
+biased protocol reported. No fold is negative any more, so the fold-2 regime
+warning is withdrawn: it was an artifact of the biased tree selection, not a
+regime effect. Sign stability across all five folds is the strongest evidence
+here that the signal is real, even though it is thin.
+
+The fold ICIR (1.09) is a mean/std across only five fold means, not a daily
+ICIR; it is not comparable to the daily ICIR figures elsewhere in this card and
+should not be read against the plan's ">1.0 is suspicious" daily band.
 
 ## Phase 7 audit — is the edge real?
 
@@ -201,11 +215,27 @@ non-zero ranking signal: IC t-stat 4.04 over 153 dates.
 - **A material part of the edge is missingness/selection driven** (7.1): on
   clean, fully-populated rows the decile spread goes negative and IC halves.
   The deployable signal is weaker than the headline VALID/TEST number.
-- **3 trees.** Early stopping chose `best_iteration = 2`; the entire model is
-  three shallow trees. Importances are coarse, and such a model is fragile to
-  regime shifts (see fold 2 below).
-- **Walk-forward fold 2 (2024-01 → 2024-08) had negative mean IC (−0.016)** —
-  the edge is not present in every regime.
+- **The VALID metrics are inflated by early stopping; TEST is the honest
+  number.** The tree count is a hyperparameter chosen on VALID AUC, so VALID
+  cannot also be a clean estimate of it. Measured directly (2026-08-31,
+  TRAIN+VALID only): re-fitting with early stopping moved to an `inner_holdout`
+  — VALID never seen during fitting — drops VALID AUC 0.5165 → **0.5074**, mean
+  IC 0.0284 → **0.0141**, spread 0.00086 → **0.00022**. So roughly **half to
+  two-thirds of the VALID edge is the tree count fitting VALID.** This does not
+  touch TEST: selecting a hyperparameter on VALID and evaluating on TEST is
+  exactly what the split is for, so TEST (IC 0.0359) remains uncontaminated.
+  But read the honest through-time expectation off the walk-forward
+  (**IC ≈ 0.009**), not off VALID — TEST at 0.0359 is likely the lucky side of
+  a much thinner true edge.
+- **3 trees, and it is not a tuning artifact.** Early stopping chose
+  `best_iteration = 2`. Probed across `learning_rate` ∈ {0.02, 0.05, 0.10} ×
+  `early_stopping_rounds` ∈ {200, 500}: **every** combination stopped at
+  `best_iteration = 2` when stopping on VALID. VALID AUC genuinely peaks at
+  tree 3 and never recovers over 500 further rounds at any learning rate, so
+  this is not impatience. With an honest inner holdout the optimum instead
+  lands at 80–717 trees — i.e. 3 trees is the count that best fits *VALID*,
+  which is the same finding as the bullet above. Importances are coarse at this
+  size, and the model is correspondingly fragile.
 - **Index rows** (NIFTY, BANKNIFTY, NIFTYNXT50) are 1.45% of rows and a
   different volatility regime; metrics are not reported separately with/without
   them.
@@ -221,6 +251,13 @@ non-zero ranking signal: IC t-stat 4.04 over 153 dates.
   for procedural identity.
 - **No costs.** The decile spread is gross equal-weighted return; bid-ask and
   impact on ~16.8k-contract names are not modelled.
+- **Scoring this model requires pinning its feature list.** The `_is_null`
+  indicator set is otherwise derived from the data (NULL rate > 1%), and
+  `ret_10d` sits at 1.20% against that 1% threshold — a refreshed dataset could
+  silently add or drop a column and misalign the saved model. Always pass the
+  `feature_names` recorded in this model's evaluation JSON to
+  `load_training_frame(..., feature_names=...)`; it rebuilds exactly that
+  contract regardless of observed rates. Unpinned loading is for training only.
 - **TEST was predicted twice by the audit harness during development** (once
   before a fix to the *importance* code path, once after); both runs were the
   identical sealed protocol (same fit, same seed) and produced identical
