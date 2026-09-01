@@ -33,6 +33,9 @@ from mktmtm.progress import progress_stage
 
 logger = logging.getLogger(__name__)
 
+# Rows per UPDATE ... FROM (VALUES %s) statement.
+_PAGE_SIZE = 1000
+
 __all__ = ["GEX_COLUMNS", "recompute_dealer_aggregates"]
 
 
@@ -66,7 +69,9 @@ def _update_gex_columns(conn: Any, df: pd.DataFrame) -> int:
 
     A strict UPDATE (not an upsert): rows missing from ``ml_dataset`` are left
     untouched, so a recompute can never invent a partial row. Returns the
-    number of rows written.
+    number of rows *actually written* (``cur.rowcount``), not the number
+    attempted — those differ exactly when ``ml_dataset`` is missing the
+    (symbol, date) pairs, which is the failure this counter exists to surface.
     """
     cols = [c for c in GEX_COLUMNS if c in df.columns]
     if not cols or df.empty:
@@ -91,10 +96,24 @@ def _update_gex_columns(conn: Any, df: pd.DataFrame) -> int:
         f"FROM (VALUES %s) AS v(symbol, date, {', '.join(cols)}) "
         "WHERE m.symbol = v.symbol AND m.date = v.date"
     )
+    # Paged by hand rather than via execute_values' own page_size: that helper
+    # issues one statement per page and leaves cur.rowcount holding only the
+    # last page's count, which would under-report the total.
+    written = 0
     with conn.cursor() as cur:
-        execute_values(cur, sql, rows, template=template, page_size=1000)
+        for i in range(0, len(rows), _PAGE_SIZE):
+            page = rows[i : i + _PAGE_SIZE]
+            execute_values(cur, sql, page, template=template, page_size=len(page))
+            written += cur.rowcount
     conn.commit()
-    return len(rows)
+    if written < len(rows):
+        logger.warning(
+            "gex-features: %d/%d rows had no ml_dataset twin and were skipped "
+            "(run make-dataset to create them)",
+            len(rows) - written,
+            len(rows),
+        )
+    return written
 
 
 def recompute_dealer_aggregates(

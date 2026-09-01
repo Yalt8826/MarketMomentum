@@ -58,6 +58,40 @@ def _stage_etl() -> str:
     return "option_metrics refreshed (gamma/vanna/charm baked into every chain element)"
 
 
+def _stage_make_dataset(limit_symbols: str | None, limit_dates: int | None) -> str:
+    """Rebuild ``ml_dataset`` — features, dealer aggregates *and* targets.
+
+    This is the stage that writes ``TARGET_COLUMNS``; ``gex-features`` refreshes
+    the dealer aggregates only, so a pipeline without this one leaves
+    ``next_day_abs_return`` NULL and ``test-gex`` blocks with "no complete
+    (gex, next_day_abs_return) rows".
+    """
+    import psycopg2
+
+    from mktmtm.ml.dataset import (
+        TARGET_COLUMNS,
+        build_dataset,
+        export_parquet,
+        write_dataset,
+    )
+    from mktmtm.storage.db import build_dsn
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        df = build_dataset(
+            conn, symbols=_parse_symbols(limit_symbols), limit_dates=limit_dates
+        )
+        if df.empty:
+            return "no rows — option_metrics is empty"
+        written = write_dataset(conn, df)
+    finally:
+        conn.close()
+    targets = [c for c in TARGET_COLUMNS if c in df.columns]
+    labeled = int(df[targets].notna().any(axis=1).sum())
+    out = export_parquet(df, settings.processed_data_dir / "ml_dataset.parquet")
+    return f"{written} rows -> ml_dataset ({labeled} with targets); parquet -> {out}"
+
+
 def _stage_gex_features(limit_symbols: str | None, limit_dates: int | None) -> str:
     import psycopg2
 
@@ -157,12 +191,15 @@ def run_gex_pipeline(
     out_path: str | Path | None = None,
     run_model: bool = True,
     skip: set[str] | None = None,
+    include: set[str] | None = None,
 ) -> None:
-    """Run the four-stage GEX pipeline in order.
+    """Run the GEX pipeline in order: preparse -> etl -> make-dataset -> test-gex.
 
     ``skip`` holds the stage names to skip (``preparse``, ``etl``,
-    ``gex-features``, ``test-gex``) — useful for smoke runs where earlier
-    stages' outputs already exist.
+    ``make-dataset``, ``test-gex``) — useful for smoke runs where earlier
+    stages' outputs already exist. ``include`` opts extra stages in;
+    ``gex-features`` is the only one, and only useful when ``make-dataset`` is
+    skipped.
     """
     skip = skip or set()
     stages: list[_Stage] = []
@@ -170,7 +207,14 @@ def run_gex_pipeline(
         stages.append(("preparse-bhavcopy", _stage_preparse))
     if "etl" not in skip:
         stages.append(("etl", _stage_etl))
-    if "gex-features" not in skip:
+    if "make-dataset" not in skip:
+        stages.append(
+            ("make-dataset", lambda: _stage_make_dataset(limit_symbols, limit_dates))
+        )
+    # gex-features is redundant after make-dataset (build_dataset writes the
+    # GEX_COLUMNS too), so it is opt-in here; it stays the fast standalone
+    # refresh when only the aggregate SQL changed and targets are already good.
+    if "gex-features" in (include or set()):
         stages.append(("gex-features", lambda: _stage_gex_features(limit_symbols, limit_dates)))
     if "test-gex" not in skip:
         stages.append(
@@ -231,6 +275,33 @@ def _robustness_line(name: str, check: dict[str, Any]) -> tuple[str, str]:
     """One table row per robustness check (sign-test-shaped or blocked)."""
     if "status" in check:  # blocked entry: {"status": ..., "reason": ...}
         return (f"robustness: {name}", f"blocked — {check.get('reason', '')}")
+    # The confound controls are not sign-test-shaped; each gets its own line.
+    if name == "sign_vs_magnitude":
+        signed = check["ic_signed"]["mean_ic"]
+        mag = check["ic_magnitude_only"]["mean_ic"]
+        verdict = "sign adds info" if check["sign_adds_information"] else "SIGN ADDS NOTHING"
+        return (
+            f"robustness: {name}",
+            f"IC(-gex)={signed:+.4f} vs IC(-|gex|)={mag:+.4f} — {verdict}",
+        )
+    if name == "iv_control":
+        base = check["ic_control_alone"]
+        gex = check.get("-gex", {})
+        return (
+            f"robustness: {name}",
+            f"IC({check['control']})={base['mean_ic']:+.4f} alone; "
+            f"IC(-gex | {check['control']})={gex.get('mean_ic', float('nan')):+.4f} "
+            f"(t={gex.get('ic_t_stat', float('nan')):+.2f})",
+        )
+    if name == "within_symbol":
+        partial = check.get("partial_spearman_controlling_own_iv")
+        tail = f", | own IV {partial:+.4f}" if partial is not None else ""
+        return (
+            f"robustness: {name}",
+            f"h1_consistent={check['h1_consistent']}, "
+            f"rho={check['spearman_gex_z_vs_abs_return']:+.4f}{tail}, "
+            f"decile ratio {check['decile_ratio']:.2f}x",
+        )
     h1 = check.get("h1_consistent", "—")
     ic = check.get("ic_neg_gex", {})
     mean_ic = ic.get("mean_ic")

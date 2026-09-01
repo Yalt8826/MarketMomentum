@@ -337,11 +337,11 @@ def gex_pipeline(
         str | None,
         typer.Option(
             "--skip",
-            help="Comma-separated stages to skip: preparse,etl,gex-features,test-gex.",
+            help="Comma-separated stages to skip: preparse,etl,make-dataset,test-gex.",
         ),
     ] = None,
 ) -> None:
-    """Run preparse → etl → gex-features → test-gex with staged progress UI.
+    """Run preparse → etl → make-dataset → test-gex with staged progress UI.
 
     Each stage calls the same function its standalone command calls; this adds
     per-stage banners and a final results table (rich on a TTY, log lines

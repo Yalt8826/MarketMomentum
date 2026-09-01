@@ -472,7 +472,7 @@ def robustness_checks(
     frame: pd.DataFrame,
     gex_liq: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
-    """Task 6.4 — the four mandatory robustness checks.
+    """Task 6.4 — the mandatory robustness checks.
 
     Returns a dict keyed by check name; every check is a sign-test-shaped
     dict (plus ICs) so the JSON table is uniform. ``gex_liq`` is an optional
@@ -528,6 +528,12 @@ def robustness_checks(
             "in_expiry_week": sign_test(frame[mask]) if mask.any() else None,
             "outside_expiry_week": sign_test(frame[~mask]) if (~mask).any() else None,
         }
+
+    # 5-6. Confound controls. The four checks above all vary the *sample*; none
+    # asks whether the pooled effect is dealer gamma or a size/IV proxy.
+    out["sign_vs_magnitude"] = sign_vs_magnitude(frame)
+    out["iv_control"] = iv_control(frame)
+    out["within_symbol"] = within_symbol_test(frame)
     return out
 
 
@@ -734,3 +740,148 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ─────────────────── confound controls (Task 6.4, checks 5-6) ───────────────
+# The cross-sectional H1 sign test compares gex<0 against gex>0 *across
+# symbols*, and GEX scales with OI x gamma x S^2 — so it is also a size and
+# liquidity ranking. Small, thinly-traded names carry small |gex| and are more
+# volatile for reasons that have nothing to do with dealer hedging. These two
+# checks separate the mechanism from the proxy; both were added after the first
+# five-year run showed the headline IC surviving every original robustness check
+# while failing these.
+_MIN_Z_PERIODS = 60
+
+
+def sign_vs_magnitude(
+    frame: pd.DataFrame,
+    gex_col: str = "gex",
+    ret_col: str = TARGET_COLUMN,
+    date_col: str = "date",
+) -> dict[str, Any]:
+    """Does the *sign* of GEX carry anything the magnitude does not?
+
+    H1 is a claim about dealers being short gamma, so discarding the sign
+    (ranking on ``-|gex|`` instead of ``-gex``) should destroy the signal. If
+    the magnitude-only IC matches or beats the signed IC, the result is a size
+    ranking wearing the dealer-gamma story's clothes.
+    """
+    signed = frame.assign(_f=-frame[gex_col])
+    magnitude = frame.assign(_f=-frame[gex_col].abs())
+    out = {
+        "ic_signed": _ic_summary(daily_rank_ic(signed, "_f", ret_col, date_col)),
+        "ic_magnitude_only": _ic_summary(
+            daily_rank_ic(magnitude, "_f", ret_col, date_col)
+        ),
+    }
+    out["sign_adds_information"] = bool(
+        out["ic_signed"]["mean_ic"] > out["ic_magnitude_only"]["mean_ic"]
+    )
+    return out
+
+
+def iv_control(
+    frame: pd.DataFrame,
+    features: tuple[str, ...] = (
+        "gex", "gex_chg", "dex", "dist_to_flip", "vanna_exp", "charm_exp",
+        "otm_put_oi_build",
+    ),
+    control_col: str = "ce_iv_30",
+    ret_col: str = TARGET_COLUMN,
+    date_col: str = "date",
+) -> dict[str, Any]:
+    """Partial IC of each dealer feature after removing ATM implied vol.
+
+    The option market already publishes a volatility forecast; a dealer-exposure
+    feature earns its place only by predicting realized vol *beyond* what IV
+    says. ``gex`` is entered signed-negative (``-gex``) so a positive partial IC
+    keeps meaning "short gamma precedes higher vol".
+    """
+    if control_col not in frame.columns:
+        return {"status": "blocked", "reason": f"{control_col} missing from frame"}
+    out: dict[str, Any] = {"control": control_col}
+    baseline = frame.dropna(subset=[control_col, ret_col])
+    out["ic_control_alone"] = _ic_summary(
+        daily_rank_ic(baseline, control_col, ret_col, date_col)
+    )
+    for feat in features:
+        if feat not in frame.columns:
+            continue
+        sub = frame.assign(_f=-frame[feat] if feat == "gex" else frame[feat])
+        sub = sub.dropna(subset=["_f", control_col, ret_col])
+        label = f"-{feat}" if feat == "gex" else feat
+        out[label] = _ic_summary(_partial_ic(sub, "_f", control_col, ret_col, date_col))
+    return out
+
+
+def within_symbol_test(
+    frame: pd.DataFrame,
+    gex_col: str = "gex",
+    iv_col: str = "ce_iv_30",
+    ret_col: str = TARGET_COLUMN,
+    symbol_col: str = "symbol",
+    date_col: str = "date",
+) -> dict[str, Any]:
+    """H1 re-specified *within* each symbol, which kills the size confound.
+
+    Each symbol's ``gex`` is z-scored against its **own** past — an expanding
+    mean/std over strictly prior rows (``shift(1)``, ``min_periods``
+    ``_MIN_Z_PERIODS``), so the statistic is causal and a symbol is only ever
+    compared with itself. The cross-sectional size/liquidity differences that
+    contaminate the pooled sign test cannot enter.
+
+    H1 predicts a **negative** correlation: a symbol's own low-gex (short
+    gamma) days precede its own larger moves. The partial figure repeats it
+    controlling for the symbol's own IV z-score, so a surviving effect is
+    information the symbol's own option market had not already priced.
+    """
+    missing = [c for c in (gex_col, ret_col, symbol_col, date_col) if c not in frame.columns]
+    if missing:
+        return {"status": "blocked", "reason": f"missing columns {missing}"}
+
+    def _expanding_z(s: pd.Series) -> pd.Series:
+        prior = s.shift(1)
+        return (s - prior.expanding(min_periods=_MIN_Z_PERIODS).mean()) / prior.expanding(
+            min_periods=_MIN_Z_PERIODS
+        ).std()
+
+    df = frame.dropna(subset=[gex_col, ret_col]).sort_values([symbol_col, date_col])
+    grouped = df.groupby(symbol_col)
+    df = df.assign(_gz=grouped[gex_col].transform(_expanding_z))
+    if iv_col in df.columns:
+        df = df.assign(_ivz=grouped[iv_col].transform(_expanding_z))
+    df = df.replace([np.inf, -np.inf], np.nan).dropna(subset=["_gz"])
+    if len(df) < 100:
+        return {"status": "blocked", "reason": f"only {len(df)} rows survive the z-score warmup"}
+
+    rho = float(df["_gz"].corr(df[ret_col], method="spearman"))
+    lo, hi = df["_gz"].quantile(0.10), df["_gz"].quantile(0.90)
+    low, high = df[df["_gz"] <= lo], df[df["_gz"] >= hi]
+    welch = sps.ttest_ind(low[ret_col], high[ret_col], equal_var=False)
+    out: dict[str, Any] = {
+        "n_rows": int(len(df)),
+        "min_periods": _MIN_Z_PERIODS,
+        "spearman_gex_z_vs_abs_return": rho,
+        "own_low_decile_mean_abs_return": float(low[ret_col].mean()),
+        "own_high_decile_mean_abs_return": float(high[ret_col].mean()),
+        "decile_ratio": float(low[ret_col].mean() / high[ret_col].mean()),
+        "welch_t_stat": float(welch.statistic),
+        "welch_p_value": float(welch.pvalue),
+        # H1 predicts a negative correlation (low own-gex -> larger own move).
+        "h1_consistent": bool(rho < 0),
+        "per_year": {
+            str(y): float(g["_gz"].corr(g[ret_col], method="spearman"))
+            for y, g in df.groupby(df[date_col].dt.year)
+        },
+    }
+    if "_ivz" in df.columns:
+        sub = df.dropna(subset=["_ivz"])
+        x = sub["_gz"].rank(pct=True).to_numpy()
+        c = sub["_ivz"].rank(pct=True).to_numpy()
+        y_ = sub[ret_col].rank(pct=True).to_numpy()
+        c_aug = np.column_stack([np.ones_like(c), c])
+        x_res = x - c_aug @ np.linalg.lstsq(c_aug, x, rcond=None)[0]
+        y_res = y_ - c_aug @ np.linalg.lstsq(c_aug, y_, rcond=None)[0]
+        out["partial_spearman_controlling_own_iv"] = float(np.corrcoef(x_res, y_res)[0, 1])
+        out["n_rows_partial"] = int(len(sub))
+    return out

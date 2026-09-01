@@ -158,6 +158,9 @@ class _CapturingCursor:
         self.sql: str | None = None
         self.args: list[tuple[object, ...]] = []
         self.template: str | None = None
+        # psycopg2 exposes the affected-row count here; _update_gex_columns
+        # accumulates it across pages to report actual writes.
+        self.rowcount = 0
 
     def execute(self, sql: str, args: tuple[object, ...] | None = None) -> None:
         self.sql = sql
@@ -198,6 +201,7 @@ def test_update_gex_columns_casts_values(monkeypatch) -> None:
         cur.sql = sql
         cur.args = [tuple(r) for r in rows]
         cur.template = template
+        cur.rowcount = len(cur.args)  # psycopg2 reports affected rows here
 
     monkeypatch.setattr("mktmtm.gex_features.execute_values", fake_execute_values)
     conn = _CapturingConn()
@@ -226,3 +230,38 @@ def test_update_gex_columns_casts_values(monkeypatch) -> None:
         ("AAA", pd.Timestamp("2026-01-05").date(), 1.0, None),
         ("AAA", pd.Timestamp("2026-01-06").date(), 2.0, None),
     ]
+
+
+def test_update_gex_columns_reports_actual_writes(monkeypatch) -> None:
+    """``rows_updated`` must count rows written, not rows attempted.
+
+    Regression: the counter returned ``len(rows)``, so a recompute against an
+    ``ml_dataset`` missing the (symbol, date) pairs reported full success while
+    writing nothing — which is exactly how a stale dataset stays invisible. It
+    must also accumulate across pages: ``execute_values`` issues one statement
+    per page and leaves ``cur.rowcount`` holding only the last page's count.
+    """
+    import mktmtm.gex_features as gf
+
+    # Only the first row of each page has an ml_dataset twin.
+    def fake_execute_values(cur, sql, rows, template=None, page_size=100):  # type: ignore[no-untyped-def]
+        cur.sql = sql
+        cur.args = [tuple(r) for r in rows]
+        cur.template = template
+        cur.rowcount = 1
+
+    monkeypatch.setattr(gf, "execute_values", fake_execute_values)
+    monkeypatch.setattr(gf, "_PAGE_SIZE", 2)
+    conn = _CapturingConn()
+    df = pd.DataFrame(
+        {
+            "symbol": ["AAA"] * 4,
+            "date": pd.to_datetime(
+                ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08"]
+            ),
+            "dex": [1.0, 2.0, 3.0, 4.0],
+        }
+    )
+
+    # 4 rows / page size 2 = 2 pages, 1 write each.
+    assert gf._update_gex_columns(conn, df) == 2
