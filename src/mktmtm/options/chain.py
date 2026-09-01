@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from functools import lru_cache
 from typing import Any
 
 import numpy as np
@@ -99,9 +100,21 @@ def pick_strike_nearest_underlying(
     return ce30, ce60, ce90, pe30, pe60, pe90, float(chosen_strike)
 
 
+@lru_cache(maxsize=200_000)
 def get_time_to_expiry_in_years(date_key: str, expiry_str: str) -> float:
     """Converts an expiry date string like '25-Apr-2025' into the fractional
     number of years until expiry from the given as-of date, in India time.
+
+    Memoized: this is a pure function of two date strings, but the callers hit
+    it once per *chain element* while a chain holds only a handful of distinct
+    expiries (measured: 3 unique expiries across 832 rows). Both enrichment
+    engines and ``dealer_exposure.gamma_flip_spot`` walk the chain, so an
+    uncached call costs ~32 µs × ~99M calls ≈ 50 min of redundant
+    ``strptime``/``localize`` work on a five-year ETL run. The cache is bounded
+    at 200k entries — a full run has roughly 1,254 dates × ~40 expiries of
+    distinct pairs, so it never evicts in practice, and each entry is two short
+    strings plus a float. ``lru_cache`` is thread-safe in CPython, which the
+    threaded per-symbol ETL relies on.
     """
     india_tz = pytz.timezone("Asia/Kolkata")
     expiry_naive = datetime.strptime(expiry_str, "%d-%b-%Y")

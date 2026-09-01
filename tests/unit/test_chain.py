@@ -77,3 +77,26 @@ def test_get_option_expiry_formats_timestamp() -> None:
 def test_get_option_expiry_returns_none_when_missing() -> None:
     assert get_option_expiry(pd.Series({"SYMBOL": "NIFTY"})) is None
     assert get_option_expiry(pd.Series({"EXPIRY_DT": np.nan})) is None
+
+
+def test_time_to_expiry_is_memoized_on_both_arguments() -> None:
+    """The cache key must include the as-of date, not just the expiry.
+
+    Both enrichment engines and gamma_flip_spot call this once per chain
+    element while a chain holds ~3 distinct expiries, so it is memoized. A
+    cache keyed on expiry alone would return the previous day's time-to-expiry
+    for every subsequent date — silently wrong Greeks across the whole run.
+    """
+    from mktmtm.options.chain import get_time_to_expiry_in_years as f
+
+    f.cache_clear()
+    a = f("01-Apr-2021", "29-Apr-2021")
+    b = f("02-Apr-2021", "29-Apr-2021")  # same expiry, next day
+    assert a > b, "a later as-of date must give a shorter time to expiry"
+    assert b == pytest.approx(a - 1.0 / 365.0, abs=1e-9)
+
+    # Repeat calls are served from cache and stay identical.
+    assert f("01-Apr-2021", "29-Apr-2021") == a
+    assert f("02-Apr-2021", "29-Apr-2021") == b
+    info = f.cache_info()
+    assert info.misses == 2 and info.hits == 2
