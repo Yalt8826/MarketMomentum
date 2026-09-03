@@ -83,8 +83,9 @@ PARTICIPANT_COLUMN_MAP: dict[str, str] = {
 
 PARTICIPANT_COLUMNS = tuple(PARTICIPANT_COLUMN_MAP.values())
 
-# (long, short) pairs that must balance in the TOTAL row: every open long
-# contract is somebody's short. A break here means a truncated or corrupt file.
+# (long, short) pairs that balance in the TOTAL row: every open long contract
+# is somebody's short. A break well beyond _BALANCE_TOLERANCE means a truncated
+# or corrupt file.
 _BALANCED_PAIRS = (
     ("future_index_long", "future_index_short"),
     ("future_stock_long", "future_stock_short"),
@@ -94,6 +95,14 @@ _BALANCED_PAIRS = (
     ("option_stock_put_long", "option_stock_put_short"),
     ("total_long_contracts", "total_short_contracts"),
 )
+
+# NSE publishes every figure independently rounded to whole contracts, so even
+# the TOTAL row's long and short legs need not match exactly. Measured across
+# the 14 days this gate originally rejected, the drift is uniformly +/-1 and
+# never larger; 2 leaves a margin while staying ~6 orders of magnitude below
+# any real truncation. Do not widen this without re-measuring: an exact gate
+# here silently dropped those 14 legitimate trading days.
+_BALANCE_TOLERANCE = 2
 
 # NSE rounds each participant row to whole contracts independently of the TOTAL
 # row, so the four categories need not sum to TOTAL exactly. Four rows rounded
@@ -241,8 +250,10 @@ def validate_participant_frame(df: pd.DataFrame) -> list[str]:
     Two identities hold by construction in the source and are checked here
     because they catch truncation and corruption that a byte count cannot:
 
-    1. In the ``TOTAL`` row every long leg equals its short leg — each open
-       contract is held long by one participant and short by another.
+    1. In the ``TOTAL`` row every long leg equals its short leg, to within
+       ``_BALANCE_TOLERANCE`` — each open contract is held long by one
+       participant and short by another, but NSE rounds both legs
+       independently.
     2. ``Client + DII + FII + Pro`` equals ``TOTAL`` in every column, to within
        ``_SUM_TOLERANCE`` — NSE rounds each row independently, so this one is
        near-exact rather than exact (see that constant for the bound).
@@ -265,9 +276,12 @@ def validate_participant_frame(df: pd.DataFrame) -> list[str]:
     for long_col, short_col in _BALANCED_PAIRS:
         if pd.isna(total[long_col]) or pd.isna(total[short_col]):
             problems.append(f"TOTAL.{long_col}/{short_col} is null")
-        elif total[long_col] != total[short_col]:
+            continue
+        drift = abs(int(total[long_col]) - int(total[short_col]))
+        if drift > _BALANCE_TOLERANCE:
             problems.append(
-                f"TOTAL {long_col}={total[long_col]:,} != {short_col}={total[short_col]:,}"
+                f"TOTAL {long_col}={total[long_col]:,} != {short_col}="
+                f"{total[short_col]:,} (off by {drift:,})"
             )
 
     parts = df.loc[df["client_type"] != "TOTAL", list(PARTICIPANT_COLUMNS)].sum()

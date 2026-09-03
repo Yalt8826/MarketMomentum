@@ -104,9 +104,21 @@ def test_missing_columns_raise() -> None:
 def test_validator_catches_unbalanced_total() -> None:
     """Every open long is somebody's short; a broken TOTAL means corruption."""
     frame = parse_participant_oi(_read("fao_participant_oi_28082026.csv"), date(2026, 8, 28))
-    frame.loc[frame["client_type"] == "TOTAL", "future_index_short"] += 1
+    frame.loc[frame["client_type"] == "TOTAL", "future_index_short"] += 5000
     problems = validate_participant_frame(frame)
     assert any("future_index_long" in p for p in problems)
+
+
+def test_validator_tolerates_one_contract_balance_drift() -> None:
+    """Regression: NSE rounds the TOTAL row's long and short legs independently,
+    so they can differ by 1 on a perfectly good file. An exact gate here
+    silently rejected 14 legitimate trading days (2023-08-10, the 2023-10-10..26
+    run, and 2025-03-25) before this was fixed."""
+    frame = parse_participant_oi(_read("fao_participant_oi_28082026.csv"), date(2026, 8, 28))
+    for column in ("total_long_contracts", "option_index_call_long", "option_index_put_long"):
+        probe = frame.copy()
+        probe.loc[probe["client_type"] == "TOTAL", column] += 1
+        assert validate_participant_frame(probe) == [], f"{column} drift of 1 rejected"
 
 
 def test_validator_catches_participant_sum_mismatch() -> None:
