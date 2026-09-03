@@ -283,6 +283,13 @@ def gex_features(
             help="Only the N most recent trading dates (smoke runs).",
         ),
     ] = None,
+    parquet: Annotated[
+        bool,
+        typer.Option(
+            "--parquet/--no-parquet",
+            help="Re-export data/processed/ml_dataset.parquet from the DB afterwards.",
+        ),
+    ] = True,
 ) -> None:
     """Recompute dealer-exposure aggregates into ml_dataset (no full make-dataset).
 
@@ -290,10 +297,14 @@ def gex_features(
     oi_hhi, max_pain, call_wall/put_wall, dist_to_flip, ...) from the chain,
     leaving momentum features and targets untouched. Long phases report through
     ``mktmtm.progress`` and a final summary table is printed.
+
+    The parquet export is re-run by default: this command writes to PostgreSQL
+    only, so without it the parquet keeps the GEX values it was built with and
+    silently disagrees with the table.
     """
     import psycopg2
 
-    from mktmtm.gex_features import recompute_dealer_aggregates
+    from mktmtm.gex_features import export_ml_dataset_parquet, recompute_dealer_aggregates
     from mktmtm.gex_pipeline import print_summary_table
     from mktmtm.storage.db import build_dsn
 
@@ -301,9 +312,17 @@ def gex_features(
     conn = psycopg2.connect(build_dsn())
     try:
         summary = recompute_dealer_aggregates(conn, symbols=syms, limit_dates=limit_dates)
+        print_summary_table(summary)
+        if parquet:
+            out, n = export_ml_dataset_parquet(conn)
+            typer.echo(f"Parquet re-exported: {n:,} rows -> {out}")
+        else:
+            typer.echo(
+                "Parquet NOT re-exported — data/processed/ml_dataset.parquet now "
+                "disagrees with ml_dataset. Re-run with --parquet before training from it."
+            )
     finally:
         conn.close()
-    print_summary_table(summary)
 
 
 @app.command(name="test-gex")

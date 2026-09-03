@@ -265,3 +265,36 @@ def test_update_gex_columns_reports_actual_writes(monkeypatch) -> None:
 
     # 4 rows / page size 2 = 2 pages, 1 write each.
     assert gf._update_gex_columns(conn, df) == 2
+
+
+def test_export_ml_dataset_parquet_uses_dataset_columns(tmp_path, monkeypatch) -> None:
+    """Regression: gex-features writes to PostgreSQL only, so without an export
+    the parquet keeps the GEX values it was built with. That is how the
+    2026-09-04 DEALER_SIGN correction left data/processed/ml_dataset.parquet
+    holding the old sign for all 212,441 rows while the table held the new one.
+
+    Column identity and order must follow DATASET_COLUMNS (the single source of
+    truth), and rows must come back ordered (symbol, date) — row order is
+    load-bearing for every momentum feature downstream.
+    """
+    import pandas as pd
+
+    import mktmtm.gex_features as gf
+    from mktmtm.ml.dataset import DATASET_COLUMNS
+
+    captured: dict[str, str] = {}
+
+    def fake_read_sql(sql, conn):
+        captured["sql"] = sql
+        return pd.DataFrame({c: [1.0, 2.0] for c in DATASET_COLUMNS})
+
+    monkeypatch.setattr(gf.pd, "read_sql", fake_read_sql)
+
+    out, n = gf.export_ml_dataset_parquet(object(), tmp_path / "ml_dataset.parquet")
+
+    assert n == 2
+    assert out.exists()
+    assert "ORDER BY symbol, date" in captured["sql"]
+    for column in DATASET_COLUMNS:
+        assert column in captured["sql"], f"{column} missing from the export query"
+    assert list(pd.read_parquet(out).columns) == list(DATASET_COLUMNS)

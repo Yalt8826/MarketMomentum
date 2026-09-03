@@ -16,18 +16,22 @@ log lines when stderr is not a TTY or ``MKTMTM_NO_PROGRESS=1`` is set.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
 from psycopg2.extras import execute_values
 
+from mktmtm.config.settings import settings
 from mktmtm.ml.dataset import (
+    DATASET_COLUMNS,
     GEX_COLUMNS,
     _add_derived,
     _clean_value,
     _lift_ce_pe,
     _load_base,
     compute_chain_aggregates,
+    export_parquet,
 )
 from mktmtm.progress import progress_stage
 
@@ -36,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Rows per UPDATE ... FROM (VALUES %s) statement.
 _PAGE_SIZE = 1000
 
-__all__ = ["GEX_COLUMNS", "recompute_dealer_aggregates"]
+__all__ = ["GEX_COLUMNS", "export_ml_dataset_parquet", "recompute_dealer_aggregates"]
 
 
 def _all_symbols(conn: Any) -> list[str]:
@@ -160,3 +164,22 @@ def recompute_dealer_aggregates(
         "skipped": skipped,
         "columns": columns,
     }
+
+
+def export_ml_dataset_parquet(conn: Any, path: Path | None = None) -> tuple[Path, int]:
+    """Re-export ``data/processed/ml_dataset.parquet`` from the database.
+
+    ``recompute_dealer_aggregates`` writes to PostgreSQL only. Without this the
+    parquet keeps whatever GEX values it was built with, so anything training
+    from the file silently disagrees with the table — which is exactly how the
+    2026-09-04 ``DEALER_SIGN`` correction left the parquet holding the old sign
+    while the table held the new one, for every one of 212,441 rows.
+
+    Column identity and order follow ``DATASET_COLUMNS`` (the single source of
+    truth) and rows are ordered ``(symbol, date)``, matching what
+    ``build_dataset`` exports — row order is load-bearing downstream.
+    """
+    path = path or settings.processed_data_dir / "ml_dataset.parquet"
+    cols = ", ".join(DATASET_COLUMNS)
+    frame = pd.read_sql(f"SELECT {cols} FROM ml_dataset ORDER BY symbol, date", conn)
+    return export_parquet(frame, path), len(frame)
