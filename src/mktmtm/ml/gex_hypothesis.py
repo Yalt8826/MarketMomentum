@@ -35,6 +35,7 @@ from scipy import stats as sps  # type: ignore[import-untyped]
 
 from mktmtm.ml.metrics import daily_rank_ic, icir
 from mktmtm.ml.splits import inner_holdout, train_valid_test, walk_forward_splits
+from mktmtm.options.dealer_exposure import DEALER_SIGN
 
 logger = logging.getLogger(__name__)
 
@@ -52,13 +53,12 @@ __all__ = [
 ]
 
 # ───────────────────────────── sign convention ──────────────────────────────
-# Dealer side is an *assumption*, not a measurement. Standard GEX convention:
-# dealers are long calls and short puts against customer flow. Phase 3 encodes
-# the same constant in ml/dataset.py (Task 3.1); the flip robustness check
-# (Task 6.4) negates gex, which is exactly flipping both signs of this dict.
-# See "Known limitations" in the model card — without participant-level data
-# this cannot be verified.
-DEALER_SIGN = {"CE": +1.0, "PE": -1.0}
+# DEALER_SIGN is imported above, never restated here: options.dealer_exposure
+# owns the convention and ml/dataset.py builds the SQL aggregates from that same
+# constant. A local copy would let this hypothesis test silently disagree with
+# the features it is testing — the failure mode etl.py/pipeline.process.py
+# already demonstrates. The flip robustness check (Task 6.4) negates gex, which
+# is exactly flipping both entries.
 
 INDEX_SYMBOLS = ("NIFTY", "BANKNIFTY")
 

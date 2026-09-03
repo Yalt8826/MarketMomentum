@@ -55,7 +55,17 @@ def _chain(rows: list[tuple[float, str, int]]) -> list[dict[str, Any]]:
 
 # ───────────────────────────── sign convention ─────────────────────────────
 def test_dealer_sign_convention() -> None:
-    assert DEALER_SIGN == {"CE": +1.0, "PE": -1.0}
+    """Measured from participant OI, not the US convention: dealers are net
+    short calls and long puts (Pro book, 99.9%/98.3% of 1,258 days)."""
+    assert DEALER_SIGN == {"CE": -1.0, "PE": +1.0}
+
+
+def test_dealer_sign_has_one_definition() -> None:
+    """ml.gex_hypothesis must re-export the constant, never restate it — a
+    second copy lets the hypothesis test disagree with the features it tests."""
+    from mktmtm.ml import gex_hypothesis
+
+    assert gex_hypothesis.DEALER_SIGN is DEALER_SIGN
 
 
 def test_chain_agg_sql_renders_sign_from_constant() -> None:
@@ -99,13 +109,39 @@ def test_gamma_flip_interpolates_known_crossing() -> None:
         return net
 
     gex_lo, gex_hi = net_gex(99.0), net_gex(100.0)
-    assert gex_lo > 0 and gex_hi < 0  # sign change brackets the flip
+    # A sign change brackets the flip. Which side is positive depends on
+    # DEALER_SIGN, so assert the crossing, not the direction.
+    assert gex_lo * gex_hi < 0
     expected = 99.0 + (100.0 - 99.0) * gex_lo / (gex_lo - gex_hi)
     assert flip == pytest.approx(expected, abs=1e-9)
 
 
+def test_gamma_flip_is_invariant_under_sign_convention() -> None:
+    """The flip level must not move when DEALER_SIGN is negated.
+
+    Negating both entries negates net GEX, and negating a function does not
+    move its zeros. This is why the 2026-09-04 sign correction needed no ETL
+    re-run: `gamma_flip` and `dist_to_flip` — the strongest dealer feature
+    after an IV control — are unchanged by it, while the signed level flips.
+    """
+    import mktmtm.options.dealer_exposure as de
+
+    chain = _chain([(90.0, "CE", 1000), (110.0, "PE", 1000)])
+    flip = gamma_flip_spot(chain, 100.0, _DATE_KEY, 0.0)
+
+    original = de.DEALER_SIGN
+    try:
+        de.DEALER_SIGN = {k: -v for k, v in original.items()}
+        flipped = gamma_flip_spot(chain, 100.0, _DATE_KEY, 0.0)
+    finally:
+        de.DEALER_SIGN = original
+
+    assert flip is not None and flipped is not None
+    assert flipped == pytest.approx(flip, abs=1e-9)
+
+
 def test_gamma_flip_none_when_no_crossing() -> None:
-    # calls only -> dealers long gamma everywhere in ±10% -> no flip
+    # calls only -> dealers short gamma everywhere in ±10% -> no flip
     chain = _chain([(100.0, "CE", 1000)])
     assert gamma_flip_spot(chain, 100.0, _DATE_KEY, 0.0) is None
 

@@ -5,11 +5,16 @@ enrichment engines (``storage.etl`` and ``pipeline.process``) so they
 cannot silently diverge (hard rule 1), and by ``ml.dataset`` for the SQL
 aggregate sign convention.
 
-The dealer side is an **assumption**, not a measurement: the standard GEX
-convention takes dealers long calls and short puts against customer flow.
-Without participant-level data it cannot be verified — see "Known
-limitations" in the model card. Phase 6 flips the convention as a
-robustness check; that is a one-line change to ``DEALER_SIGN`` here.
+The dealer side is **measured**, not assumed. Across all 1,258 trading days
+of NSE participant-wise open interest the Pro book (broker proprietary
+desks, the dealer proxy) is net *short* calls on 99.9% of days and net
+*long* puts on 98.3%, with Client the exact mirror — the opposite of the
+standard US GEX convention on both legs. See
+``docs/data/participant-oi-report.md``.
+
+This is the single source of the convention; ``ml.gex_hypothesis`` imports
+it rather than restating it, so the features and the test of those features
+cannot disagree.
 """
 
 from __future__ import annotations
@@ -22,10 +27,23 @@ from mktmtm.options.chain import get_time_to_expiry_in_years
 
 __all__ = ["DEALER_SIGN", "gamma_flip_spot"]
 
-# Standard GEX convention: dealers are long calls and short puts against
-# customer flow. This is a heuristic — without participant-level data it
-# cannot be verified. See "Known limitations" in the model card.
-DEALER_SIGN = {"CE": +1.0, "PE": -1.0}
+# Measured from NSE participant-wise OI: dealers are net SHORT calls and net
+# LONG puts against retail flow (Pro book, 99.9% / 98.3% of 1,258 days), which
+# inverts the standard US convention on both legs. Indian retail buys calls and
+# writes puts; dealers take the other side.
+#
+# Corrected 2026-09-04. The previous {"CE": +1.0, "PE": -1.0} was the US
+# convention carried over untested. Because the sign enters the aggregates
+# purely multiplicatively, flipping both entries negates `gex` exactly: |gex|,
+# `gamma_flip` and `dist_to_flip` are invariant under the change (negating a
+# function does not move its zeros), while the signed level and the H1 sign
+# test flip with it.
+#
+# Index options are the exception and are NOT described by this constant: the
+# Pro index book flipped sign monotonically across 2024-25 (net short calls on
+# 90.5% of days in 2021, 36.7% in 2026). Indices are 3,086 of 212,441 rows;
+# exclude them from dealer-exposure claims rather than trusting a fixed sign.
+DEALER_SIGN = {"CE": -1.0, "PE": +1.0}
 
 # Hypothetical spot grid for the gamma-flip search: S · [0.90, 0.91, …, 1.10].
 _GEX_GRID = np.arange(0.90, 1.101, 0.01)

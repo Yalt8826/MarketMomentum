@@ -3,6 +3,34 @@
 Run of 2026-09-02 against the full re-built `option_metrics` / `ml_dataset`.
 Raw output: `models/evaluation/gex_h1.json`. Reproduce with `uv run mktmtm test-gex`.
 
+> **Sign convention corrected 2026-09-04 (commit below); the numbers on this page
+> predate it and are stated under the old convention.** `DEALER_SIGN` was the US
+> default (dealers long calls, short puts). NSE participant-wise OI measures the
+> opposite for single stocks — the Pro book is net short calls on 99.9% of 1,258
+> days and net long puts on 98.3% — so the constant is now `{"CE": -1.0, "PE":
+> +1.0}` and `gex` is negated throughout. See `docs/data/participant-oi-report.md`.
+>
+> What this changes, and what it does not:
+>
+> - **The H1 headline reverses.** Under the corrected sign the roles of the
+>   `gex_positive` and `gex_negative` groups swap: dealers are net short gamma on
+>   206,553 of 212,198 symbol-days (97.3%, structurally sensible given retail call
+>   buying) and the rare *long*-gamma days are the high-volatility ones. That runs
+>   opposite to dealer-hedging theory. The corrected result is already in the file
+>   as the `flip_dealer_sign` check — a perfect mirror, `h1_consistent: false`.
+> - **Nothing that survived the confound controls changes.** The surviving result
+>   is a *magnitude* effect, and `|gex|` is invariant under negation. `gamma_flip`
+>   and `dist_to_flip` are invariant too (negating a function does not move its
+>   zeros), so the strongest dealer feature after an IV control is untouched. The
+>   within-symbol correlation keeps its magnitude and reverses its sign label.
+> - **Indices are not covered by the correction.** The Pro index book flipped sign
+>   monotonically across 2024-25 (net short calls on 90.5% of days in 2021, 36.7%
+>   in 2026), so no fixed constant is right for them. They are 3,086 of 212,441
+>   rows and are excluded from dealer-exposure claims rather than assigned a sign.
+>
+> Re-run `mktmtm gex-features && mktmtm test-gex` to regenerate this page's
+> numbers under the corrected convention.
+
 **Data.** 212,441 symbol-days, 217 symbols, 1,254 trading dates, 2021-08-02 → 2026-08-28.
 Per-strike `gamma`/`vanna`/`charm` present on 100% of chain elements; `gamma_flip`
 resolves on 91.4% of rows (the remainder have no zero crossing in the ±10% band,
