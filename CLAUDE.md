@@ -27,6 +27,7 @@ Full pipeline order (ML training path):
 ```bash
 uv run mktmtm fetch-bhavcopy        # NSE F&O bhavcopy → data/raw/bhavcopy/
 uv run mktmtm fetch-yahoo           # daily closes → data/raw/yahoo_finance/
+uv run mktmtm fetch-participant-oi  # NSE participant-wise OI (FII/DII/Pro/Client) → participant_oi
 uv run mktmtm preparse-bhavcopy     # parquet cache; re-run after EVERY fetch (speeds etl ~4x)
 uv run mktmtm etl                   # threaded per-symbol ETL → option_metrics
 uv run mktmtm make-dataset          # features + targets → ml_dataset (+ parquet)

@@ -64,6 +64,58 @@ def fetch_bhavcopy(
     typer.echo(f"Downloaded and filtered bhavcopy for {processed} trading days.")
 
 
+@app.command(name="fetch-participant-oi")
+def fetch_participant_oi(
+    start_date: Annotated[
+        datetime | None,
+        typer.Option("--start-date", help="Start date (YYYY-MM-DD); defaults to 5 years before --end-date."),
+    ] = None,
+    end_date: Annotated[
+        datetime | None,
+        typer.Option("--end-date", help="End date (YYYY-MM-DD); defaults to today."),
+    ] = None,
+    delay: Annotated[
+        float,
+        typer.Option("--delay", min=0.0, help="Seconds between requests (global; the fetch is single-threaded)."),
+    ] = 0.5,
+    load: Annotated[
+        bool,
+        typer.Option("--load/--no-load", help="Upsert the cached CSVs into participant_oi after downloading."),
+    ] = True,
+) -> None:
+    """Download NSE participant-wise F&O open interest (Client/DII/FII/Pro)."""
+    import psycopg2
+
+    from mktmtm.data.participant_oi import (
+        FetchOutcome,
+        load_participant_frame,
+        run_pipeline,
+        write_participant_oi,
+    )
+    from mktmtm.storage.db import build_dsn
+
+    tally = run_pipeline(start_date=start_date, end_date=end_date, delay=delay)
+    failures = sum(n for o, n in tally.items() if o.is_failure)
+    typer.echo(
+        f"Participant OI: {tally[FetchOutcome.OK]} fetched, "
+        f"{tally[FetchOutcome.CACHED]} already cached, "
+        f"{tally[FetchOutcome.NO_DATA]} holidays, {failures} failed."
+    )
+    if failures:
+        typer.echo("Some days failed for reasons other than a closed market — re-run to retry.")
+
+    if not load:
+        return
+    frame = load_participant_frame()
+    conn = psycopg2.connect(build_dsn())
+    try:
+        written = write_participant_oi(conn, frame)
+    finally:
+        conn.close()
+    days = frame["date"].nunique()
+    typer.echo(f"Loaded {written} rows across {days} trading days into participant_oi.")
+
+
 @app.command(name="preparse-bhavcopy")
 def preparse_bhavcopy() -> None:
     """Build the single-pass parquet cache of all bhavcopy CSVs (speeds up `etl` ~4x)."""
