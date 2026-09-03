@@ -1,6 +1,8 @@
 # MktMtm pipeline — current state
 
 **As of 2026-09-02, commit `c1a6e84`, branch `feat/gex-dealer-positioning`.**
+*Partially superseded 2026-09-03 by `docs/data/participant-oi-report.md`, which covers
+participant-level data acquisition and the measured dealer sign.*
 
 A record of what the pipeline is, what it produces, what has been measured, and where
 the gaps are. Companion documents: `docs/implementation/gex-dealer-positioning.md`
@@ -101,9 +103,11 @@ running both repeats the 12-minute chain aggregation for nothing.
 | Earnings dates | `data/reference/earning_dates.json` | NSE board-meeting dates |
 | Lot sizes | `data/reference/lot_sizes.csv` | Historical F&O schedule; bhavcopy reports OI in *contracts* |
 
-**Not present: any participant-level data.** No FII/DII/Pro positioning, no delivery
-percentages, no bulk/block deals, no shareholding patterns. This is the defining gap —
-see "Open items".
+**Participant-level data was acquired on 2026-09-03** (`participant_oi`, 1,258 days
+of Client/DII/FII/Pro/TOTAL open interest) — see
+`docs/data/participant-oi-report.md`. It is market-wide, one row per participant per
+date, so it cannot serve as a per-symbol feature. Still not present: delivery
+percentages, bulk/block deals, shareholding patterns.
 
 ## Storage
 
@@ -112,6 +116,7 @@ see "Open items".
 | `option_metrics` | 212,441 × 16 | The fact table. JSONB `option_chain` per symbol-day |
 | `ml_dataset` | 212,441 × 69 | The training matrix |
 | `symbol_data` | 222 × 7 | Catalog metadata |
+| `participant_oi` | 6,290 × 16 | Participant-wise OI, 1,258 days × 5 categories |
 | `backtest_results` | 0 × 18 | Short-strangle output; unpopulated on this branch |
 
 `option_metrics` columns: `symbol, date, underlying_price, interest_rate,
@@ -219,9 +224,11 @@ Recorded so they are not repeated.
 
 ## Known limitations
 
-- **The dealer side is assumed, not measured.** `DEALER_SIGN` takes dealers long calls
-  and short puts. The flip check confirms the sign is load-bearing, not that the
-  assumed direction is right.
+- **The dealer side is now measured, and `DEALER_SIGN` is wrong.** Across 1,258 days
+  the Pro book is net *short* calls and *long* puts on 99.9%/98.3% of days for stock
+  options — inverted on both legs. For index options the sign is regime-dependent and
+  flipped during 2024–25. Uncorrected as of this writing; see
+  `docs/data/participant-oi-report.md`.
 - **`interest_rate` is unusable as a feature.** The MIFOR rate is carried forward
   across gaps (e.g. 11 days around 2025-04-15) and is a frozen constant on those dates.
 - **Open interest is in contracts, not shares.** Any gap in `lot_sizes.csv`
@@ -229,19 +236,18 @@ Recorded so they are not repeated.
 - **Settlement IV contamination** on untraded deep strikes. Measured: ATM ±5% carries
   83.1% of the gamma×OI weight and strikes beyond 30% moneyness carry 0.0%, so the
   contamination sits where it has no weight.
-- **`ruff` and `mypy` are not installed in `.venv`** — the dev extras are missing, so
-  the lint and type gates in CLAUDE.md currently cannot run.
+- **`ruff` and `mypy` are not installed in `.venv`** — the dev extras are missing, but
+  both run via `uvx` (`uvx ruff@latest check src/mktmtm`), so the CLAUDE.md gates are
+  enforceable without fixing the extras.
 - **`backtest_results` is empty** on this branch.
 
 ## Open items
 
 1. **No institutional-flow label.** Every target is a price or volatility outcome; none
-   says an institution entered. The project's stated goal cannot be tested against the
-   current targets. NSE participant-wise open interest (`Client / DII / FII / Pro /
-   TOTAL`, split single-stock vs index) was **confirmed reachable across the full
-   window** on 2026-09-02 and is the highest-value acquisition. A single-day probe
-   showed Pro desks net **short calls and long puts** — the opposite of `DEALER_SIGN`
-   on both legs — which makes testing that assumption the immediate next step.
+   says an institution entered. Participant-wise OI was **acquired on 2026-09-03** and
+   settles the `DEALER_SIGN` question, but it is market-wide — it supplies a
+   market-level regime target (~1,258 rows), not the per-symbol label the project's
+   stated goal needs. See `docs/data/participant-oi-report.md`.
 2. **Derivable-now flow features**, needing no new data: OI-to-volume ratio per strike
    (57.6% of chain elements have both non-zero), buildup-quadrant attribution, notional
    flow via lot sizes, outlier-strike detection, futures basis and roll.
