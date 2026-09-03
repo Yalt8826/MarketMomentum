@@ -174,18 +174,26 @@ they must match.
 
 Full detail in `docs/models/gex-dealer-positioning-findings.md`. In brief:
 
-- H1 (dealers short gamma precedes higher realized vol) **passes** its pooled test —
-  1.547% vs 1.360% mean |return|, Welch t = −8.96, p = 4.3e−19, IC(−gex) +0.0674 —
-  and passes all four original robustness checks.
-- It **fails both confound controls**. Ranking on `−|gex|`, discarding the sign the
-  hypothesis is about, scores *higher* (+0.0723). Residualized against `ce_iv_30` the
-  partial IC is −0.0099, while `ce_iv_30` alone scores +0.2114. GEX ∝ ΣOI·Γ·S², so the
-  pooled test was ranking symbols by size and liquidity.
-- The **within-symbol specification survives**: each symbol's gex z-scored against its
-  own past (causal expanding window) gives ρ = −0.0748, −0.0436 after controlling for
-  the symbol's own IV, decile ratio 1.31×, correct sign in all six years.
+Numbers are from the 2026-09-04 run, under the **corrected** `DEALER_SIGN`.
+
+- H1 (dealers short gamma precedes higher realized vol) **fails its own pooled test**.
+  Dealers are short gamma on 97.3% of symbol-days and the rare *long*-gamma days are
+  the volatile ones — 1.547% vs 1.360% mean |return|, Welch t = +8.96, p = 4.3e−19,
+  IC(−gex) −0.0674. That is the opposite of what hedging theory predicts.
+- It **also fails both confound controls**, independently of direction. Ranking on
+  `−|gex|`, discarding the sign the hypothesis is about, scores +0.0723 — better than
+  the signed version at either polarity. Residualized against `ce_iv_30` the partial IC
+  is +0.0099 against a +0.2114 baseline. GEX ∝ ΣOI·Γ·S², so the pooled test was ranking
+  symbols by size and liquidity.
+- **A magnitude effect survives, within symbol**: each symbol's gex z-scored against
+  its own past (causal expanding window) gives ρ = +0.0748, +0.0436 after controlling
+  for the symbol's own IV, same sign in all six years. Since gex is negative almost
+  always, this reads as *less dealer gamma outstanding than usual → larger next-day
+  move*. That statement is invariant to the sign convention, which is why it is the
+  one worth keeping.
 - `dist_to_flip` is the strongest dealer feature after an IV control (+0.0210,
-  t = +7.47); the GEX *level* is the weakest.
+  t = +7.47) and is **invariant** under the sign correction; the GEX *level* is near
+  the bottom.
 
 ## Failure modes already hit
 
