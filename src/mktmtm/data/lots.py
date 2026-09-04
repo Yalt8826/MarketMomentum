@@ -10,10 +10,17 @@ sparse per-symbol change-point schedule:
 circulars), ``derived`` (stock symbols, reconstructed from bhavcopy
 value/volume and validated against NSE data), or ``nse_bhavcopy``.
 
-Bhavcopy reports open interest in **contracts**; share exposure requires the
-lot size, which NSE revises periodically (quarterly review circulars plus
-corporate-action adjustments). See docs/data/lot-size-reference.md for the
-build procedure and validation coverage.
+Bhavcopy reports open interest in **shares, not contracts** — the lot size
+converts the other way, dividing OPEN_INT to recover a contract count. This
+file previously asserted the reverse. Measured 2026-09-04: OPEN_INT divides
+exactly by the lot on 98% of 2026 FUTSTK rows, and summing OPEN_INT/lot over
+all stock futures reproduces participant_oi's TOTAL contract count to within
+0.02%, where the raw sum is off by a factor of ~2,158.
+
+NSE revises lots periodically (quarterly review circulars plus corporate-action
+adjustments), so any conversion needs the schedule below rather than a constant.
+See docs/data/lot-size-reference.md for the build procedure and validation
+coverage, and docs/implementation/flow-features.md for the measurement.
 """
 
 from __future__ import annotations
