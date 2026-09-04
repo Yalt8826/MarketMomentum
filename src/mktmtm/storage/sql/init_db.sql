@@ -22,6 +22,7 @@
 \ir symbol_data.sql
 \ir init_ml_dataset.sql
 \ir init_participant_oi.sql
+\ir init_flow_features.sql
 
 -- ============================================================================
 --  Done. Sanity check:

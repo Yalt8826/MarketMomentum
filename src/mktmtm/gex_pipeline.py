@@ -271,6 +271,37 @@ def print_summary_table(summary: dict[str, Any]) -> None:
     )
 
 
+def print_flow_summary_table(summary: dict[str, Any]) -> None:
+    """Final ``flow-features`` summary: coverage, and how often the detector fired.
+
+    The two outlier rows are the ones to read after a threshold change — a
+    detector that flags every symbol-day is measuring the chain's noise floor,
+    and one that never flags is measuring nothing.
+    """
+    rows = int(summary["rows"]) or 1
+    _table_or_log(
+        "flow-features summary",
+        [
+            ("rows", f"{summary['rows']:,}"),
+            ("symbols", str(summary["symbols"])),
+            ("dates", str(summary["dates"])),
+            ("rows written", f"{summary['rows_written']:,}"),
+            (
+                "symbol-days w/ outlier",
+                f"{summary['symbol_days_with_outlier']:,} "
+                f"({summary['symbol_days_with_outlier'] / rows:.1%})",
+            ),
+            ("outlier strikes flagged", f"{summary['outliers_flagged']:,}"),
+            (
+                "with futures basis",
+                f"{summary['with_futures_basis']:,} "
+                f"({summary['with_futures_basis'] / rows:.1%})",
+            ),
+            ("parquet", summary["parquet"] or "—"),
+        ],
+    )
+
+
 def _robustness_line(name: str, check: dict[str, Any]) -> tuple[str, str]:
     """One table row per robustness check (sign-test-shaped or blocked)."""
     if "status" in check:  # blocked entry: {"status": ..., "reason": ...}

@@ -31,6 +31,7 @@ uv run mktmtm fetch-participant-oi  # NSE participant-wise OI (FII/DII/Pro/Clien
 uv run mktmtm preparse-bhavcopy     # parquet cache; re-run after EVERY fetch (speeds etl ~4x)
 uv run mktmtm etl                   # threaded per-symbol ETL → option_metrics
 uv run mktmtm make-dataset          # features + targets → ml_dataset (+ parquet)
+uv run mktmtm flow-features         # outlier strikes + futures basis → flow_features
 uv run mktmtm backtest              # optional
 ```
 
@@ -86,6 +87,11 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 - **The bhavcopy parquet cache is held as one sorted DataFrame + a `{symbol: (start, stop)}`
   `searchsorted` offset map** (`etl._load_cache`). A per-symbol dict of frames OOM-killed the ETL at
   ~12.5 GB; boolean-masking per symbol was memory-safe but re-scanned 60M rows 222 times.
+- **Bhavcopy `OPEN_INT`/`CHG_IN_OI` are in SHARES, not contracts.** The lot size divides to
+  recover a contract count; it never multiplies. `data/lots.py` asserted the reverse until
+  2026-09-04. Verified against `participant_oi` (which does report contracts):
+  `SUM(OPEN_INT / lot)` over all stock futures matches its `TOTAL` to within 0.02%, where the
+  raw sum is off by ~2,158x. Notional is `oi * spot`.
 - **Targets are NULL on each symbol's most recent day** (no "tomorrow"). Those are inference rows,
   never training rows.
 - **`screen_corporate_actions` blanks, and logs, rather than drops.** A silent filter here is how
@@ -112,6 +118,8 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+`docs/implementation/flow-features.md` (outlier-strike + futures-basis features: threshold
+measurements, the OI-units defect, and the per-symbol vs market-level results),
 `docs/data/iv-integrity-audit.md` (price-basis and IV-solver defects + verified fixes),
 `docs/data/etl-integrity-change-report.md` (five-year build audit: the cache offset-map
 and spot-basis defects, the change set, re-run procedure and acceptance criteria),

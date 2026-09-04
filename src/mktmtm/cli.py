@@ -7,6 +7,7 @@ import typer
 
 from mktmtm.config.logging import configure_logging
 from mktmtm.config.settings import settings
+from mktmtm.features.flow import OUTLIER_MIN_SHARE, OUTLIER_Z
 
 app = typer.Typer(
     name="mktmtm",
@@ -323,6 +324,68 @@ def gex_features(
             )
     finally:
         conn.close()
+
+
+@app.command(name="flow-features")
+def flow_features(
+    limit_dates: Annotated[
+        int | None,
+        typer.Option(
+            "--limit-dates",
+            min=1,
+            help="Only the N most recent trading dates (smoke runs).",
+        ),
+    ] = None,
+    z_threshold: Annotated[
+        float,
+        typer.Option(
+            "--z-threshold",
+            min=0.0,
+            help="Robust |z| an OI change must clear to be an outlier strike.",
+        ),
+    ] = OUTLIER_Z,
+    min_share: Annotated[
+        float,
+        typer.Option(
+            "--min-share",
+            min=0.0,
+            max=1.0,
+            help="Minimum share of the symbol-day's total |chg_oi| a flagged strike must hold.",
+        ),
+    ] = OUTLIER_MIN_SHARE,
+    parquet: Annotated[
+        bool,
+        typer.Option(
+            "--parquet/--no-parquet",
+            help="Also export data/processed/flow_features.parquet.",
+        ),
+    ] = True,
+) -> None:
+    """Build per-symbol flow features (outlier strikes + futures basis) into flow_features.
+
+    Reads the bhavcopy parquet cache and option_metrics; writes the
+    flow_features table (and the matching parquet). Both thresholds gate the
+    outlier detector and a strike must clear both — see
+    docs/implementation/flow-features.md for how they were chosen.
+    """
+    import psycopg2
+
+    from mktmtm.features.flow import run_flow_features
+    from mktmtm.gex_pipeline import print_flow_summary_table
+    from mktmtm.storage.db import build_dsn
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        summary = run_flow_features(
+            conn,
+            limit_dates=limit_dates,
+            z_threshold=z_threshold,
+            min_share=min_share,
+            parquet=parquet,
+        )
+    finally:
+        conn.close()
+    print_flow_summary_table(summary)
 
 
 @app.command(name="test-gex")
