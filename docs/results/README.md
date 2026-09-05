@@ -393,6 +393,24 @@ removed.**
 
 ---
 
+## 7b. Stage 5 — accumulation detection (specified, not yet run)
+
+After Stage 4 the project's framing was corrected: the goal is **detection**
+(has an institution been accumulating this stock?) not **forecasting** (will
+they buy tomorrow?). Stages 1 and 4 asked the forecasting question; Stage 3 had
+the right shape but validated against an earnings calendar its own placebo beat.
+
+Stage 5 runs that experiment against a real per-symbol label — SEBI quarterly
+FII/DII shareholding, ~20 filings × ~200 symbols. The primary baseline is
+**price momentum** (institutions buy what is going up), which plays the role
+the expiry calendar played in Stage 1: the obvious explanation that must be
+ruled out before any F&O feature earns credit.
+
+Design, traps and acceptance criteria:
+[`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md).
+
+---
+
 ## 8. Cross-cutting findings
 
 Results that are not any single stage's output but emerged from the work.

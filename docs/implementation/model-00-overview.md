@@ -14,12 +14,20 @@ the inter-stage contracts. The per-stage files are useless without it.
 | 1b — quadrants | **Built and useful.** | Delta adjustment is required: raw vs adjusted disagree on **35.8%** of contracts. Direction features are the only block that improves Stage 1. |
 | 2 — regime HMM | **Negative.** No persistent discrete regimes. | Min transition diagonal **never exceeds 0.5 at any k** (0.367 → 0.072); BIC never turns around. |
 | 3 — attribution | **Mixed, leaning negative.** Decomposes but does not identify. | Placebo passes (R² 0.45 vs −0.01) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones for 2 of 3 participants. |
+| [**5 — accumulation detection**](model-06-accumulation-detection.md) | **Specified, not built.** The reframe: nowcasting, not forecasting. | Uses `shareholding` — the first real per-symbol institutional label. |
 | [4 — flow momentum](model-05-flow-momentum.md) | **Split.** A real lead, but microstructure rather than whales. | No momentum (autocorrelation ≈ 0). Futures leads options at 2–3 days (partial +0.033, 84% of symbols) — but **flat across activity terciles**, so not institutional. |
 
 **Full results report: [`../results/README.md`](../results/README.md)** — consolidated
 across all four stages, with methodology, limitations and reproduction steps.
 
-Three of four are negative or null. That is the honest state of the work, and
+**The framing changed after Stage 4.** Stages 1 and 4 asked *forecasting*
+questions; the project's actual goal is *detection* — given a symbol's F&O
+activity, has an institution been accumulating the underlying stock? Stage 3
+had the right shape and the wrong label. Stage 5 is that experiment done
+properly, against a real per-symbol label; see
+[model-06-accumulation-detection.md](model-06-accumulation-detection.md).
+
+Three of four completed stages are negative or null. That is the honest state of the work, and
 the write-up should lead with it rather than with the one stage that produced a
 usable feature. The pipeline is demonstrably capable of detecting signal when
 it is present — the Stage 1 leakage tripwire scores exactly 1.0000, and the
