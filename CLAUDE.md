@@ -45,6 +45,7 @@ uv run mktmtm flow-regimes          # Stage 2: pooled HMM → flow_regimes  (~11
 uv run mktmtm flow-attribution      # Stage 3: LLP attribution → flow_attribution
 uv run mktmtm flow-momentum         # Stage 4: does positioning continue? (self-supervised)
 uv run mktmtm accumulation          # Stage 5: detect accumulation vs shareholding label
+uv run mktmtm nowcast               # rank symbols for the quarter SEBI has not disclosed yet
 ```
 
 Smoke runs: `make-dataset --limit-symbols RELIANCE,TCS --limit-dates 30`, `process --limit-days 5`,

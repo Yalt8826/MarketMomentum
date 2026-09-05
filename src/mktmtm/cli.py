@@ -987,6 +987,77 @@ def _print_accumulation(summary: dict[str, Any]) -> None:
         )
 
 
+@app.command(name="nowcast")
+def nowcast_cmd(
+    holder: Annotated[
+        str, typer.Option("--holder", help="Which holder's accumulation to nowcast.")
+    ] = "mf",
+    top: Annotated[
+        int, typer.Option("--top", min=1, help="Symbols to show at each end.")
+    ] = 15,
+    out: Annotated[
+        Path | None,
+        typer.Option("--out", help="Write a committed markdown record here."),
+    ] = None,
+) -> None:
+    """Rank symbols by accumulation in the quarter SEBI has not disclosed yet.
+
+    A forward prediction with a known verification date: the open quarter's
+    filing publishes ~6 weeks after it closes, at which point this ranking can
+    be scored. The score is momentum-residualised and calibrated at the live
+    window's own length. It is a weak ranking, not a stock tip — read the IC.
+    """
+    import psycopg2
+
+    from mktmtm.ml.accumulation import nowcast as run_nowcast
+    from mktmtm.storage.db import build_dsn
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        result = run_nowcast(conn, holder=holder)
+    finally:
+        conn.close()
+
+    cal = result["calibration"]
+    typer.echo(
+        f"\nNowcast · {result['holder']} accumulation · as of {result['as_of']}"
+    )
+    typer.echo(
+        f"  window {result['median_window_days']}d · {result['symbols']} symbols"
+        f" · {result['dropped_stale_filing']} dropped (stale filing)"
+    )
+    typer.echo(
+        f"  calibrated IC at this window: {cal.get('mean_ic', float('nan')):+.4f}"
+        f"  (positive in {cal.get('positive_rate', 0):.0%} of"
+        f" {int(cal.get('periods', 0))} historical quarters)"
+    )
+    v = result["verification"]
+    typer.echo(
+        f"  open quarter ends {v['open_quarter_ends']};"
+        f" checkable from ~{v['filing_expected']}"
+    )
+
+    frame = result["ranking"]
+    typer.echo(f"\n  most likely under accumulation (top {top}):")
+    for r in frame.head(top).itertuples(index=False):
+        typer.echo(
+            f"   {r.rank:>3}  {r.symbol:<14} score {r.score:+7.1f}"
+            f"   basis {r.signal_raw:+8.2f}   ret {r.window_return:+7.2%}"
+        )
+    typer.echo(f"\n  least likely (bottom {top}):")
+    for r in frame.tail(top).itertuples(index=False):
+        typer.echo(
+            f"   {r.rank:>3}  {r.symbol:<14} score {r.score:+7.1f}"
+            f"   basis {r.signal_raw:+8.2f}   ret {r.window_return:+7.2%}"
+        )
+
+    if out is not None:
+        from mktmtm.ml.accumulation import write_nowcast_record
+
+        path = write_nowcast_record(result, out)
+        typer.echo(f"\n  record written to {path}")
+
+
 @app.command(name="test-gex")
 def test_gex(
     limit_symbols: Annotated[

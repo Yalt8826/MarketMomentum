@@ -290,15 +290,22 @@ def aggregate_window(daily: pd.DataFrame) -> dict[str, float]:
 
 
 def _window_bounds(
-    row: Any, window: Window
+    row: Any, window: Window, *, early_days: int = EARLY_DAYS
 ) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
-    """Feature window for one (symbol, filing) row, per the three variants."""
+    """Feature window for one (symbol, filing) row, per the three variants.
+
+    ``early_days`` parameterises the "early" variant. It exists so a live
+    nowcast can be calibrated against a *matched* historical window rather than
+    interpolated between the 30-day and full-quarter results — the open window
+    at any given moment is whatever has elapsed since the last filing, and that
+    is rarely either of them.
+    """
     if window == "contemporaneous":
         return row.prev_date, row.date
     if window == "early":
         if pd.isna(row.prev_date):
             return None, None
-        return row.prev_date, row.prev_date + pd.Timedelta(days=EARLY_DAYS)
+        return row.prev_date, row.prev_date + pd.Timedelta(days=early_days)
     if window == "lead":
         return row.prev_prev_date, row.prev_date
     raise ValueError(f"unknown window {window!r}")
@@ -310,6 +317,7 @@ def build_accumulation_frame(
     holder: str = "fii",
     window: Window = "contemporaneous",
     drop_corporate_actions: bool = True,
+    early_days: int = EARLY_DAYS,
 ) -> pd.DataFrame:
     """One row per (symbol, filing): window features plus the accumulation target."""
     flow = pd.read_sql(_FLOW_SQL, conn)
@@ -337,7 +345,7 @@ def build_accumulation_frame(
 
     rows: list[dict[str, Any]] = []
     for row in targets.itertuples(index=False):
-        start, end = _window_bounds(row, window)
+        start, end = _window_bounds(row, window, early_days=early_days)
         if start is None or pd.isna(start) or pd.isna(end):
             continue
         daily = by_symbol.get(str(row.symbol))
@@ -777,3 +785,235 @@ def counterparty_check(
         "periods": int(values.size),
         "rows": int(len(joined)),
     }
+
+
+# ═════════════════════════ live nowcast ════════════════════════════════════
+
+#: A symbol whose open window is this much longer than the median has a stale
+#: filing (a missed quarter, or a delisting in progress) and is not comparable
+#: to the rest of the cross-section.
+NOWCAST_WINDOW_TOLERANCE = 1.5
+
+
+def nowcast(
+    conn: Any,
+    *,
+    holder: str = "mf",
+    feature: str = PREREGISTERED_FEATURE,
+    drop_corporate_actions: bool = True,
+) -> dict[str, Any]:
+    """Rank symbols by accumulation in the quarter SEBI has not disclosed yet.
+
+    Every filing period in `shareholding` is closed and scored. The *open*
+    period — from each symbol's last filing to the most recent flow date — has
+    no label and will not until SEBI publishes, roughly six weeks after the
+    quarter ends. That gap is what makes this a **falsifiable forward
+    prediction with a known verification date** rather than a restatement of
+    the fit.
+
+    Two things make the output honest rather than a stock tip:
+
+    - **The score is momentum-residualised.** The validated result is a
+      *partial* IC controlling price momentum; handing back a raw
+      `basis_excess` ranking would largely hand back a momentum ranking, which
+      §9.1 of the stage report shows explains FII flow and not fund flow.
+    - **It is calibrated at the matched window length.** The open window is
+      whatever has elapsed since the last filing — usually neither 30 days nor
+      a full quarter — so the caller gets the historical IC measured at
+      *that* length rather than an interpolation between the two published
+      numbers.
+    """
+    flow = pd.read_sql(_FLOW_SQL, conn)
+    flow["date"] = pd.to_datetime(flow["date"]).astype("datetime64[us]")
+    as_of = flow["date"].max()
+
+    filings = pd.read_sql(_SHAREHOLDING_SQL, conn)
+    filings["date"] = pd.to_datetime(filings["date"]).astype("datetime64[us]")
+    last = (
+        filings.groupby("symbol", observed=True)["date"].max().rename("last_filing")
+    )
+
+    by_symbol: dict[str, pd.DataFrame] = {
+        str(symbol): group.set_index("date").sort_index()
+        for symbol, group in flow.groupby("symbol", observed=True)
+    }
+
+    rows: list[dict[str, Any]] = []
+    for symbol, filed in last.items():
+        daily = by_symbol.get(str(symbol))
+        if daily is None:
+            continue
+        chunk = daily.loc[(daily.index > filed) & (daily.index <= as_of)]
+        features = aggregate_window(chunk)
+        if not features or feature not in features:
+            continue
+        rows.append(
+            {
+                "symbol": str(symbol),
+                "last_filing": filed,
+                "window_days": int((as_of - filed).days),
+                "signal_raw": features[feature],
+                "window_return": features["_window_return"],
+                "trading_days": features["_days"],
+            }
+        )
+    if not rows:
+        raise ValueError("no symbols have an open window with usable flow data")
+
+    frame = pd.DataFrame(rows)
+    # A stale filing makes a window that is not comparable to the rest.
+    median_days = float(frame["window_days"].median())
+    stale = frame["window_days"] > median_days * NOWCAST_WINDOW_TOLERANCE
+    frame = frame.loc[~stale].reset_index(drop=True)
+
+    # Momentum-residualised score, cross-sectionally: rank both, regress the
+    # signal rank on the momentum rank, keep the residual.
+    ranked = frame[["signal_raw", "window_return"]].rank(method="average")
+    x, z = ranked["signal_raw"], ranked["window_return"]
+    beta = x.cov(z) / z.var() if z.var() > 0 else 0.0
+    frame["score"] = x - beta * (z - z.mean()) - x.mean()
+    frame = frame.sort_values("score", ascending=False).reset_index(drop=True)
+    frame["rank"] = np.arange(1, len(frame) + 1)
+
+    window_days = int(median_days)
+    calibration = _calibrate_window(
+        conn, holder=holder, feature=feature, window_days=window_days,
+        drop_corporate_actions=drop_corporate_actions,
+    )
+    return {
+        "as_of": str(pd.Timestamp(as_of).date()),
+        "holder": holder,
+        "feature": feature,
+        "symbols": int(len(frame)),
+        "dropped_stale_filing": int(stale.sum()),
+        "median_window_days": window_days,
+        "verification": _verification_note(as_of),
+        "calibration": calibration,
+        "ranking": frame,
+    }
+
+
+def _calibrate_window(
+    conn: Any,
+    *,
+    holder: str,
+    feature: str,
+    window_days: int,
+    drop_corporate_actions: bool,
+) -> dict[str, Any]:
+    """Historical IC of ``feature`` measured at the nowcast's own window length."""
+    try:
+        frame = build_accumulation_frame(
+            conn, holder=holder, window="early", early_days=window_days,
+            drop_corporate_actions=drop_corporate_actions,
+        )
+    except ValueError as exc:
+        return {"error": str(exc)}
+    frame["_momentum"] = frame["_window_return"]
+    summary = _summarize(_period_partial_ic(frame, feature, "_momentum"))
+    summary["window_days"] = float(window_days)
+    return summary
+
+
+def _verification_note(as_of: pd.Timestamp) -> dict[str, str]:
+    """When the open quarter's filing lands, and so when this becomes checkable."""
+    quarter_end = pd.Timestamp(as_of).to_period("Q").end_time.normalize()
+    # SEBI allows 21 days after the quarter for the filing; NSE publication has
+    # run a few weeks behind that across this dataset.
+    return {
+        "open_quarter_ends": str(quarter_end.date()),
+        "filing_expected": str((quarter_end + pd.Timedelta(days=45)).date()),
+        "how": (
+            "re-run `mktmtm fetch-shareholding`, then score this ranking against "
+            "the realised mf_shares change for the quarter"
+        ),
+    }
+
+
+def write_nowcast_record(result: dict[str, Any], path: Path) -> Path:
+    """Commit the prediction to a markdown record, git-timestamped.
+
+    The point of a forward prediction is that it is fixed *before* the outcome
+    is known. `models/` is gitignored, so an artifact there proves nothing
+    about when it was written; a committed file does.
+    """
+    frame: pd.DataFrame = result["ranking"]
+    cal = result["calibration"]
+    v = result["verification"]
+
+    def _table(rows: pd.DataFrame) -> str:
+        lines = [
+            "| Rank | Symbol | Score | `basis_excess_mean` | Window return |",
+            "|---:|---|---:|---:|---:|",
+        ]
+        lines += [
+            f"| {r.rank} | `{r.symbol}` | {r.score:+.1f} | {r.signal_raw:+.2f} "
+            f"| {r.window_return:+.2%} |"
+            for r in rows.itertuples(index=False)
+        ]
+        return "\n".join(lines)
+
+    body = f"""# Nowcast — {result['holder'].upper()} accumulation, open quarter
+
+**Made {result['as_of']}, before the outcome was observable.** This file is
+committed so its timestamp is verifiable; `models/` is gitignored and proves
+nothing about when a prediction was written.
+
+| | |
+|---|---|
+| Signal | `{result['feature']}`, momentum-residualised |
+| Window | {result['median_window_days']} days since each symbol's last filing |
+| Universe | {result['symbols']} symbols ({result['dropped_stale_filing']} dropped for a stale filing) |
+| **Calibrated IC at this window** | **{cal.get('mean_ic', float('nan')):+.4f}** |
+| Historical hit rate | positive in {cal.get('positive_rate', 0):.0%} of {int(cal.get('periods', 0))} quarters |
+| Open quarter ends | {v['open_quarter_ends']} |
+| **Checkable from** | **~{v['filing_expected']}** |
+
+## What this is, and is not
+
+A **weak cross-sectional ranking**. An IC of {cal.get('mean_ic', float('nan')):+.3f}
+means the ordering is right rather more often than chance and nothing
+stronger — individual symbols will be wrong. The claim is about the *ranking*
+across the universe, not about any name in it.
+
+The score is residualised on the window's price return, because the raw signal
+correlates with momentum and momentum explains *foreign* flow rather than
+domestic fund flow. A raw ranking would largely be a momentum ranking.
+
+## How to score it
+
+```bash
+uv run mktmtm fetch-shareholding      # once the open quarter's filing publishes
+uv run mktmtm accumulation --holder mf --window contemporaneous
+```
+
+Then rank-correlate the `score` column below against the realised
+`mf_shares` change for the quarter. Under the null the correlation is 0; the
+calibration above says to expect ≈ {cal.get('mean_ic', float('nan')):+.3f}.
+
+## Most likely under accumulation
+
+{_table(frame.head(25))}
+
+## Least likely
+
+{_table(frame.tail(25))}
+
+---
+
+*Method: [`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md).
+Full ranking of all {result['symbols']} symbols is in
+`models/evaluation/nowcast.json`.*
+"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body)
+
+    EVALUATION_DIR.mkdir(parents=True, exist_ok=True)
+    (EVALUATION_DIR / "nowcast.json").write_text(
+        json.dumps(
+            {**{k: v for k, v in result.items() if k != "ranking"},
+             "ranking": frame.to_dict(orient="records")},
+            indent=2, default=str,
+        ) + "\n"
+    )
+    return path

@@ -427,6 +427,74 @@ or the desks facilitating it, leaves futures trading rich to carry.
 established of the two: foreign institutional accumulation is explained by
 price momentum, and nothing in the F&O book tested here adds to it.
 
+## 9.8 A live nowcast, made before the outcome exists
+
+`uv run mktmtm nowcast` ranks symbols by accumulation in the quarter SEBI has
+**not yet disclosed**. Every period in `shareholding` is closed and scored; the
+open period — from each symbol's last filing to the most recent flow date — has
+no label and will not until the filing publishes. That gap is what makes this a
+falsifiable forward prediction rather than a restatement of the fit.
+
+**First run, 2026-08-28** — recorded in
+[`../results/nowcast-2026-08-28.md`](../results/nowcast-2026-08-28.md), which is
+*committed* so its timestamp is verifiable (`models/` is gitignored and proves
+nothing about when a prediction was written).
+
+| | |
+|---|---|
+| Window | 59 days (2026-06-30 → 2026-08-28), 43 trading days |
+| Universe | 177 symbols |
+| **Calibrated IC** | **+0.1145**, positive in 17 of 19 historical quarters |
+| Open quarter ends | 2026-09-30 |
+| **Checkable from** | ~2026-11-14 |
+
+### Calibrating at the live window rather than interpolating
+
+The open window is whatever has elapsed since the last filing — here 59 days,
+neither the published 30-day nor the full-quarter figure. Rather than
+interpolate, `_calibrate_window` measures the historical IC at that exact
+length. The curve is monotone, which is itself a consistency check: a signal
+that accumulates information over the window should get stronger with it.
+
+| Window | Partial IC | Positive periods |
+|---|---|---|
+| 30d | +0.0846 | 85% of 13 |
+| 45d | +0.0947 | 89% of 19 |
+| **59d (live)** | **+0.1145** | **89% of 19** |
+| 75d | +0.1335 | 89% of 19 |
+| Full quarter | +0.1374 | 95% of 19 |
+
+### The score is residualised, not raw
+
+The validated result is a *partial* IC, so the shipped score must be one too. A
+raw `basis_excess` ranking would largely be a momentum ranking, and momentum
+explains **foreign** flow rather than domestic fund flow. Verified on the live
+run: rank correlation between score and window return is **−0.008**.
+
+In this particular window the raw signal happened to be nearly uncorrelated
+with momentum (−0.026), so residualising barely reordered anything (rank
+correlation with the raw signal, 0.9996). That is a property of this quarter,
+not a reason to drop the step.
+
+### Coverage
+
+177 of 213 symbols with shareholding filings are ranked. One is dropped for a
+stale filing (a 697-day window, not comparable to the rest). The other 35 have
+shareholding filings but **no F&O flow data after 2026-06-30** — they have left
+the derivatives universe, so there is no footprint to read.
+
+### How to score it
+
+```bash
+uv run mktmtm fetch-shareholding      # once the open quarter's filing publishes
+uv run mktmtm accumulation --holder mf --window contemporaneous
+```
+
+Rank-correlate the recorded `score` against the realised `mf_shares` change.
+Under the null that correlation is 0; the calibration says to expect ≈ +0.11.
+**A materially negative result would be evidence against the whole stage**,
+which is the point of writing it down in advance.
+
 ## 10. Next steps
 
 Items 2 and 3 of the previous list are done (§9.5a, §9.5b). What remains:

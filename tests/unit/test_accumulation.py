@@ -268,7 +268,7 @@ def _robustness_frame(effect: float, n_periods: int = 12, n_symbols: int = 80):
     """A panel where `basis_excess_mean` genuinely drives accumulation."""
     rng = np.random.default_rng(7)
     rows = []
-    for p_i, period in enumerate(pd.date_range("2022-03-31", periods=n_periods, freq="QE")):
+    for period in pd.date_range("2022-03-31", periods=n_periods, freq="QE"):
         for s_i in range(n_symbols):
             basis = rng.normal()
             rows.append(
@@ -376,3 +376,68 @@ def test_time_gradient_needs_enough_periods() -> None:
 
     tiny = _robustness_frame(effect=1.0, n_periods=4, n_symbols=40)
     assert "error" in time_gradient(tiny)
+
+
+# ── the live nowcast ────────────────────────────────────────────────────────
+
+
+def test_verification_date_follows_the_open_quarter() -> None:
+    """A forward prediction needs a date on which it becomes checkable."""
+    from mktmtm.ml.accumulation import _verification_note
+
+    note = _verification_note(pd.Timestamp("2026-08-28"))
+    assert note["open_quarter_ends"] == "2026-09-30"
+    # SEBI allows 21 days; NSE publication has run a few weeks behind that.
+    assert pd.Timestamp(note["filing_expected"]) > pd.Timestamp("2026-10-21")
+
+
+def test_early_window_is_parameterised() -> None:
+    """The open window is whatever has elapsed since the last filing.
+
+    Calibrating a live nowcast means measuring the historical IC at *that*
+    length rather than interpolating between the published 30-day and
+    full-quarter numbers.
+    """
+    row = _row(
+        date=pd.Timestamp("2024-06-30"),
+        prev_date=pd.Timestamp("2024-03-31"),
+        prev_prev_date=pd.Timestamp("2023-12-31"),
+    )
+    _start, end = _window_bounds(row, "early", early_days=59)
+    assert (end - pd.Timestamp("2024-03-31")).days == 59
+
+
+def test_nowcast_score_is_momentum_neutral() -> None:
+    """The validated result is a partial IC, so the shipped score must be too.
+
+    A raw ranking would largely be a momentum ranking, and momentum explains
+    foreign flow rather than domestic fund flow.
+    """
+    rng = np.random.default_rng(3)
+    n = 200
+    momentum = rng.normal(size=n)
+    # A signal deliberately contaminated with momentum.
+    raw = 0.8 * momentum + 0.4 * rng.normal(size=n)
+    frame = pd.DataFrame({"signal_raw": raw, "window_return": momentum})
+
+    ranked = frame[["signal_raw", "window_return"]].rank(method="average")
+    x, z = ranked["signal_raw"], ranked["window_return"]
+    beta = x.cov(z) / z.var()
+    score = x - beta * (z - z.mean()) - x.mean()
+
+    assert abs(np.corrcoef(raw, momentum)[0, 1]) > 0.7, "premise: raw is contaminated"
+    assert abs(np.corrcoef(score, momentum)[0, 1]) < 0.15
+
+
+def test_stale_filings_are_excluded_from_the_nowcast() -> None:
+    """A symbol that missed a filing has a window spanning two quarters.
+
+    Its accumulation is not comparable to the rest of the cross-section, so it
+    must not be ranked alongside them.
+    """
+    from mktmtm.ml.accumulation import NOWCAST_WINDOW_TOLERANCE
+
+    windows = pd.Series([59, 59, 59, 59, 697])
+    median = float(windows.median())
+    stale = windows > median * NOWCAST_WINDOW_TOLERANCE
+    assert stale.tolist() == [False, False, False, False, True]
