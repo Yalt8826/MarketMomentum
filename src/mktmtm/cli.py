@@ -472,6 +472,166 @@ def _print_market_flow_summary(summary: dict[str, Any]) -> None:
         )
 
 
+@app.command(name="flow-regimes")
+def flow_regimes(
+    states: Annotated[
+        str,
+        typer.Option("--states", help="Comma-separated n_states grid for the BIC search."),
+    ] = "2,3,4,5,6",
+    restarts: Annotated[
+        int,
+        typer.Option("--restarts", min=1, help="EM restarts per state count."),
+    ] = 10,
+    train_end: Annotated[
+        datetime | None,
+        typer.Option(
+            "--train-end",
+            formats=["%Y-%m-%d"],
+            help="Seal the fit at this date (default: the ml/splits.py TRAIN_END).",
+        ),
+    ] = None,
+    parquet: Annotated[
+        bool,
+        typer.Option(
+            "--parquet/--no-parquet",
+            help="Also export data/processed/flow_regimes.parquet.",
+        ),
+    ] = True,
+) -> None:
+    """Stage 2: fit a pooled HMM over per-symbol flow observables into flow_regimes.
+
+    The fit is sealed at --train-end and only the Viterbi decode runs forward;
+    fitting on all history and then discovering states that explain it is
+    look-ahead. Reports the BIC curve and the transition matrix diagonal — a
+    near-uniform diagonal means regimes are not present in these observables,
+    which is a result, not a bug. See docs/implementation/model-03-regime-hmm.md.
+    """
+    import pandas as pd
+    import psycopg2
+
+    from mktmtm.ml.regimes import run_flow_regimes
+    from mktmtm.ml.splits import TRAIN_END
+    from mktmtm.storage.db import build_dsn
+
+    grid = tuple(int(x) for x in states.split(",") if x.strip())
+    conn = psycopg2.connect(build_dsn())
+    try:
+        result = run_flow_regimes(
+            conn,
+            train_end=pd.Timestamp(train_end) if train_end else TRAIN_END,
+            state_grid=grid,
+            n_restarts=restarts,
+            parquet=parquet,
+        )
+    finally:
+        conn.close()
+    _print_regime_summary(result)
+
+
+def _print_regime_summary(result: dict[str, Any]) -> None:
+    """Persistence first — it decides whether anything else here is worth reading."""
+    typer.echo(
+        f"\nstates {result['n_states']}  "
+        f"(fit sealed at {result['train_end']}, {result['train_rows']:,} train rows)"
+    )
+    typer.echo(
+        f"  scored {result['scored_rows']:,} symbol-days "
+        f"({result['retention']:.1%} retained, {result['symbols']} symbols)"
+    )
+    diagonal = ", ".join(f"{d:.3f}" for d in result["diagonal"])
+    verdict = "PASS" if result["persistence_passes"] else "FAIL"
+    typer.echo(f"  transition diagonal [{diagonal}]  persistence {verdict}")
+    typer.echo("  BIC curve:")
+    for k, bic in sorted(result["bic_curve"].items(), key=lambda kv: int(kv[0])):
+        spread = result["restart_loglik_spread"].get(k, 0.0)
+        mark = "*" if int(k) == result["n_states"] else " "
+        typer.echo(f"   {mark} k={k}  bic {bic:>14,.0f}  restart spread {spread:>10,.1f}")
+    validation = result.get("validation", {})
+    typer.echo(
+        f"  states with opposed FII/Client signs: "
+        f"{validation.get('states_with_opposed_fii_client_signs', 0)}"
+        f"/{validation.get('n_states', 0)}"
+    )
+
+
+@app.command(name="flow-attribution")
+def flow_attribution(
+    participant: Annotated[
+        list[str] | None,
+        typer.Option("--participant", help="Repeatable. Default: FII, Pro, Client."),
+    ] = None,
+    target: Annotated[
+        str, typer.Option("--target", help="participant_oi net column to attribute.")
+    ] = "d_net_opt_stock_call",
+    parquet: Annotated[
+        bool,
+        typer.Option(
+            "--parquet/--no-parquet",
+            help="Also export data/processed/flow_attribution.parquet.",
+        ),
+    ] = True,
+) -> None:
+    """Stage 3: attribute the market-wide flow across symbols (Learning from Label Proportions).
+
+    flow_score is NOT a measurement of institutional flow in a symbol — the
+    per-symbol allocation is not uniquely determined by the data. Read the
+    placebo and identifiability lines before the R-squared. See
+    docs/implementation/model-04-attribution-bridge.md.
+    """
+    import psycopg2
+
+    from mktmtm.ml.attribution import run_flow_attribution
+    from mktmtm.storage.db import build_dsn
+
+    participants = tuple(participant) if participant else ("FII", "Pro", "Client")
+    conn = psycopg2.connect(build_dsn())
+    try:
+        summary = run_flow_attribution(
+            conn, participants=participants, column=target, parquet=parquet
+        )
+    finally:
+        conn.close()
+    _print_attribution_summary(summary)
+
+
+def _print_attribution_summary(summary: dict[str, Any]) -> None:
+    """Placebo and identifiability first; the aggregate R-squared is the least
+    informative number here despite being the one the model optimised."""
+    for name, result in summary.items():
+        if name.startswith("_"):
+            continue
+        if "error" in result:
+            typer.echo(f"\n{name}: {result['error']}")
+            continue
+        ident = result.get("identifiability", {})
+        placebo = result.get("placebo", {})
+        earnings = result.get("earnings", {})
+        typer.echo(f"\n{name}  (alpha {result['alpha']}, {result['bags']} bags)")
+        typer.echo(
+            f"  identifiability   linear-vs-tree rank corr "
+            f"{ident.get('per_symbol_rank_correlation', float('nan')):+.4f}"
+            f"   {'IDENTIFIED' if ident.get('identified') else 'NOT IDENTIFIED'}"
+        )
+        typer.echo(
+            f"  placebo           shuffled-label oos R2 "
+            f"{placebo.get('oos_r2', float('nan')):+.4f}"
+            f"   (real {result['oos_r2_walk_forward']:+.4f})"
+        )
+        typer.echo(
+            f"  earnings          pre-event lift "
+            f"{earnings.get('pre_event_lift', float('nan')):+.4f}"
+            f"   post {earnings.get('post_event_lift', float('nan')):+.4f}"
+            f"   (placebo pre "
+            f"{placebo.get('earnings', {}).get('pre_event_lift', float('nan')):+.4f})"
+        )
+        typer.echo(
+            f"  stability         lag-1 autocorr "
+            f"{result.get('stability_lag1_autocorr', float('nan')):+.4f}"
+        )
+    if "_rows_written" in summary:
+        typer.echo(f"\nrows written {summary['_rows_written']:,}")
+
+
 @app.command(name="test-gex")
 def test_gex(
     limit_symbols: Annotated[

@@ -218,7 +218,138 @@ Acceptance:
 
 ## 8. Results
 
-*To be filled in by the implementer. Lead with the placebo test and the
-identifiability sensitivity analysis, then the event corroboration, and report
-aggregate R² last — it is the least informative number in this stage despite
-being the one the model optimized.*
+**Run 2026-09-05.** `uv run mktmtm flow-attribution`, 25s.
+518,613 rows in `flow_attribution` (3 participants x ~172,900 scored
+symbol-days), `models/evaluation/flow_attribution.json`,
+`data/processed/flow_attribution.parquet`.
+
+### 8.1 First, what the R-squared is not
+
+The aggregate reconstruction is strong — Pro 0.451, Client 0.432 out-of-sample
+— and that number must not be read as contradicting [Stage 1's](model-01-market-flow.md)
+null. **These are different questions.** Stage 1 predicted the flow at `t+1`
+from features at `t` and failed. This stage *decomposes* the flow observed at
+`t` using features from `t`. It is contemporaneous attribution, not
+forecasting, and a good contemporaneous fit implies nothing about
+predictability.
+
+It is also exactly what the model optimised, so §4.1's warning applies in full:
+a model can reconstruct the aggregate perfectly while allocating it across
+symbols arbitrarily. Read §8.3 before §8.2.
+
+### 8.2 The placebo passes
+
+| Participant | Real OOS R² | Shuffled-label OOS R² |
+|---|---|---|
+| Pro | **+0.451** | −0.008 |
+| Client | **+0.432** | −0.002 |
+| FII | +0.069 | −0.015 |
+
+Shuffling the bag labels across dates destroys the fit completely for all
+three. The aggregate relationship is real and is coming from the labels, not
+from the features' own structure. FII is much weaker than the other two, which
+is consistent with everything else measured in this project.
+
+### 8.3 The event corroboration fails — and the placebo is why we know
+
+This is the finding that matters, and it is negative.
+
+| Participant | Real pre-event lift | **Placebo pre-event lift** | Real post-event lift |
+|---|---|---|---|
+| Pro | +0.012 | **−0.129** | −0.008 |
+| Client | +0.047 | **+0.097** | +0.012 |
+| FII | +0.053 | **+0.187** | +0.098 |
+
+For **Client and FII the placebo's pre-earnings lift is larger than the real
+model's** — twice as large for Client, more than three times for FII. A model
+fitted on randomly shuffled flow labels concentrates its scores around earnings
+*more* than the model fitted on the true labels does.
+
+That is unambiguous: the clustering around earnings comes from the per-symbol
+features' own structure — symbols behave unusually near earnings regardless of
+what any institution did — and **not** from the flow labels. The one piece of
+independent evidence available for the per-symbol allocation does not support
+it.
+
+FII additionally fails the direction test: its post-event lift (+0.098) exceeds
+its pre-event lift (+0.053). Positioning should build *before* an announcement;
+a larger effect after is reaction, which is not what this stage claims to
+measure.
+
+Pro is the only participant whose signs point the right way (real pre-event
+positive, placebo negative, post-event negative), but at +0.012 the effect is
+too small to carry any weight on its own.
+
+Running the placebo early, as §4.3 specified, is what made this legible. The
+real model's lifts (+0.012 to +0.053) all look like modest positive results in
+isolation, and without a placebo to compare against they would have been
+reported as weak corroboration.
+
+### 8.4 Identifiability is partial
+
+Spearman rank correlation between per-symbol scores from a linear `f` and from
+a gradient-boosted `f`, both fitted to the same bag labels:
+
+| Participant | Linear vs tree rank corr | Verdict (threshold 0.7) |
+|---|---|---|
+| Pro | +0.887 | identified |
+| Client | +0.807 | identified |
+| FII | **+0.504** | **not identified** |
+
+For Pro and Client the two functional forms rank symbols similarly, so the
+allocation is not merely an artefact of choosing a linear model. For FII they
+agree barely better than chance would allow across nine correlated features —
+its per-symbol ranking is a property of the model, not of the data, and should
+not be reported as a result at all.
+
+Note the tree variant does not satisfy the bag identity
+(`Σᵢ wᵢf(xᵢ) ≠ f(Σᵢ wᵢxᵢ)` unless `f` is linear), which is precisely why the
+linear closed form is the floor.
+
+### 8.5 Stability
+
+Lag-1 within-symbol autocorrelation of `flow_score`: FII **+0.470**, Client
++0.239, Pro +0.060.
+
+Accumulation takes days, so a persistent score is what the method should
+produce. FII's scores are the most persistent — but FII is also the
+participant that fails identifiability, so the persistence is more likely
+inherited from the slow-moving basis and gamma features than from anything
+about institutional behaviour. Pro's near-zero autocorrelation is the awkward
+one: the participant with the best aggregate fit and the cleanest event signs
+produces scores that barely persist day to day.
+
+### 8.6 What can honestly be claimed
+
+**Supported:**
+
+- The market-wide flow can be decomposed into a weighted per-symbol allocation
+  that reconstructs it well (Pro/Client R² ≈ 0.44), and that relationship is
+  real rather than an artefact (placebo ≈ 0).
+- For Pro and Client the allocation is stable across functional forms, so it
+  is a property of the data and the weights rather than of the model class.
+
+**Not supported:**
+
+- That `flow_score` measures institutional flow in a symbol. The only
+  independent evidence — the earnings calendar — does not corroborate it, and
+  for two of three participants a shuffled-label model corroborates *better*.
+- Any per-symbol ranking for FII, which fails identifiability outright.
+
+**The honest summary for the write-up:** market-level flow labels plus these
+per-symbol features are sufficient to *decompose* an observed aggregate, but
+not sufficient to *identify* which symbols the institutional flow actually went
+into. The sensitivity analysis showing why is, as §5 anticipated, a legitimate
+contribution — and a more defensible one than a confident per-symbol number
+that a placebo test would have knocked over.
+
+### 8.7 What would move this forward
+
+The earnings calendar is a weak instrument: every symbol behaves unusually near
+earnings, so it cannot separate institutional activity from ordinary
+event-driven activity. §4.2 named the better test and this run did not build
+it: **index inclusion and exclusion events**. Those force large, externally
+dated, unambiguously institutional trades in specific named symbols — a genuine
+natural experiment rather than a period of general unusualness. A few dozen
+events over five years, assembled by hand, would be the single highest-value
+addition to this stage.

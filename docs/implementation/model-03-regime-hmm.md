@@ -296,5 +296,120 @@ Acceptance:
 
 ## 8. Results
 
-*To be filled in by the implementer. Lead with the persistence test — it
-determines whether anything else in this stage is worth reporting.*
+**Run 2026-09-05.** `uv run mktmtm flow-regimes --states 2,3,4,5,6,8 --restarts 6`,
+10m54s. `models/evaluation/flow_regimes.json`, `flow_regimes` populated,
+`data/processed/flow_regimes.parquet`.
+
+### 8.1 The persistence test fails at every state count
+
+This is §6.1, the falsification test, and it is the result.
+
+| k | BIC | **min transition diagonal** | restart log-lik spread |
+|---|---|---|---|
+| 2 | −297,668 | **0.367** | 0 |
+| 3 | −544,977 | **0.255** | 0 |
+| 4 | −605,915 | **0.255** | 29,501 |
+| 5 | −643,110 | **0.253** | 18,934 |
+| 6 | −645,699 | **0.169** | 6,859 |
+| 8 | −892,883 | **0.072** | 112,865 |
+
+**No state count produces uniformly persistent states.** The requirement is
+that every state's self-transition exceeds 0.5 — that a regime survives to the
+next day. Even the two-state model has a state with a 0.367 diagonal, implying
+a mean dwell time of 1/(1−0.367) ≈ **1.6 days**. That is not a positioning
+regime; it is a day-to-day flicker.
+
+It also gets monotonically *worse* with k. A model finding real regimes and
+being given too many states typically splits them into sub-states that remain
+persistent. This one instead produces ever more transient states, which is what
+happens when a model is partitioning a **continuum** rather than discovering
+discrete modes.
+
+Per §6.1 the correct response is to report this and stop, not to search for a
+feature set that makes persistence appear. The table above is the finding.
+
+### 8.2 BIC never turns around, so it cannot select k
+
+BIC decreases monotonically across the entire grid, including out to k=8
+(−892,883 against −645,699 at k=6). It is still improving at the largest state
+count tried and would keep improving.
+
+A model-selection criterion that does not turn around inside the search grid
+has not selected anything. This is the second, independent signature of the
+same problem in §8.1: slicing a continuous factor into finer bands always
+raises the likelihood faster than the parameter penalty grows.
+
+`_select_states` therefore refuses to trust BIC here. Its fallback — the lowest
+BIC among state counts whose states are all persistent — finds **no eligible
+k**, and the result records `"criterion": "BIC, unidentified — no k had all
+states persistent"`. The run still decodes and persists a k=8 solution so the
+numbers are inspectable, but **those state labels should not be consumed
+downstream.** Stage 3 does not read them.
+
+The restart spread reinforces it: at k=8 the best and worst of six EM runs
+differ by **112,865** log-likelihood units. The likelihood surface is rough and
+the fitted states are not reproducible across seeds.
+
+### 8.3 The FII/Client check is near-tautological — do not count it
+
+The run reports "states with opposed FII/Client signs: 8/8", which looks like a
+clean structural pass. **It is not evidence, and this is worth recording so it
+is not cited later.**
+
+Correlation of `d_net_opt_stock_call` between participants:
+
+| | FII | Pro | Client | DII |
+|---|---|---|---|---|
+| **FII** | 1.000 | 0.373 | **−0.757** | 0.696 |
+| **Pro** | 0.373 | 1.000 | **−0.802** | 0.376 |
+| **Client** | −0.757 | −0.802 | 1.000 | −0.835 |
+
+Client is already −0.76 to −0.84 correlated with every institutional category,
+because the book is closed and they are the other side of it. Any variable
+correlating with FII must therefore correlate oppositely with Client, whether
+or not it carries information. Getting 8/8 is close to automatic.
+
+The check as specified in §6.2 is only informative for a variable whose
+relationship to the institutional side is itself in question. It cannot
+validate an unsupervised state assignment.
+
+### 8.4 What did work
+
+Retention was better than feared: **161,717 of 212,441 symbol-days (76.1%)
+across 211 symbols**, well above the ~16% that complete-case handling of
+`oi_outlier_direction` would have given. The Option B imputation with a paired
+`has_outlier` indicator (§2) was the right call.
+
+The mechanical parts are sound — `lengths` construction, causal within-symbol
+z-scoring, canonical state ordering — and are covered by 14 unit tests
+including a no-look-ahead assertion.
+
+### 8.5 Interpretation
+
+The honest conclusion: **these six observables do not contain persistent
+discrete positioning regimes at the symbol-day level.** Two independent
+diagnostics agree — unbounded BIC and universal persistence failure — and both
+point at the same explanation: the observables vary continuously, and an HMM
+asked to find discrete modes in a continuum will always return something while
+meaning nothing.
+
+That is a real result for the write-up, and it is more informative than a
+tuned three-state model with a story attached would have been. It also
+retrospectively justifies §4's insistence on labelling states from observable
+means before looking at outcomes: had that discipline been dropped, a k=3 fit
+with plausible-sounding "accumulation / distribution / quiet" labels would have
+been very easy to believe.
+
+### 8.6 What would change the answer
+
+Two things worth trying before concluding regimes cannot exist at all, in
+order of promise:
+
+1. **A continuous latent-state model instead of a discrete one.** If the
+   observables are a continuum, a linear-Gaussian state-space model (a Kalman
+   filter over a scalar "positioning intensity") matches the data's shape where
+   an HMM does not. It would also produce a smoothly varying score that Stage 3
+   could consume directly.
+2. **Coarser time.** Positioning may be persistent weekly and not daily.
+   Aggregating observables to weekly bars before fitting would test that
+   directly, at the cost of dividing the sample by five.

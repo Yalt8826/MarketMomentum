@@ -31,8 +31,16 @@ uv run mktmtm fetch-participant-oi  # NSE participant-wise OI (FII/DII/Pro/Clien
 uv run mktmtm preparse-bhavcopy     # parquet cache; re-run after EVERY fetch (speeds etl ~4x)
 uv run mktmtm etl                   # threaded per-symbol ETL → option_metrics
 uv run mktmtm make-dataset          # features + targets → ml_dataset (+ parquet)
-uv run mktmtm flow-features         # outlier strikes + futures basis → flow_features
+uv run mktmtm flow-features         # outlier strikes + futures basis + buildup quadrants → flow_features
 uv run mktmtm backtest              # optional
+```
+
+Modelling stages (all read the tables above; none is part of the ETL path):
+
+```bash
+uv run mktmtm market-flow           # Stage 1: market-level flow model → models/evaluation/
+uv run mktmtm flow-regimes          # Stage 2: pooled HMM → flow_regimes  (~11 min)
+uv run mktmtm flow-attribution      # Stage 3: LLP attribution → flow_attribution
 ```
 
 Smoke runs: `make-dataset --limit-symbols RELIANCE,TCS --limit-dates 30`, `process --limit-days 5`,
@@ -55,6 +63,11 @@ storage/       db.DBWriter (pooled, batched UPSERT, NaN scrub) → option_metric
                etl.py        threaded per-symbol ETL — THE path that feeds the ML dataset
                etl_chunked.py single-pass sharded variant (ETL_CHUNKS/ETL_CHUNK env), no ivp/ivr
 ml/dataset.py  option_metrics → ml_dataset (features + supervised targets)
+ml/market_flow.py    Stage 1 — market-level flow model; market_metrics.py holds its
+               metrics because ml/metrics.py is cross-sectional and undefined on a
+               one-observation-per-date series
+ml/regimes.py  Stage 2 — pooled GaussianHMM over per-symbol flow observables
+ml/attribution.py    Stage 3 — Learning from Label Proportions bridge
 pipeline/      process.py — LEGACY JSON twin of etl.py; feeds only the old UI, not the ML path
 backtest/      short-strangle + weekly delta hedge → backtest_results
 ui/            Streamlit control panel; pipeline steps run as detached subprocesses (ui/jobs.py)
@@ -94,6 +107,17 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   raw sum is off by ~2,158x. Notional is `oi * spot`.
 - **Targets are NULL on each symbol's most recent day** (no "tomorrow"). Those are inference rows,
   never training rows.
+- **The bhavcopy parquet cache's row groups are NOT in chronological order.** One row group per
+  trade date, but the frame is sorted by symbol, so the groups come out with ~293 backward steps
+  over five years. Anything needing "yesterday" must sort them first (`flow._ordered_row_groups`);
+  streaming in file order silently joins each day against an arbitrary other day and *nothing
+  fails* — the same contract exists on both days, so the merge succeeds.
+- **Option buildup quadrants must use the delta-adjusted premium residual**, never the raw
+  premium change: a call premium rises when the underlying rises regardless of who traded. Raw
+  and adjusted disagree on 35.8% of contracts (`scripts/measure_delta_adjustment.py`), and the
+  aggregate does not reveal it — the writer share barely moves while individual assignments differ.
+- **The calendar-only baseline is the bar for any market-level claim.** The expiry cycle alone
+  reaches AUC 0.61–0.72 on next-day participant flow. Stage 1 found no feature set beats it.
 - **`screen_corporate_actions` blanks, and logs, rather than drops.** A silent filter here is how
   survivorship bias creeps in.
 - **Re-running `make-dataset` alone cannot repair IV/strike/Greek defects** — those are baked into
@@ -118,10 +142,12 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
-`docs/implementation/model-00-overview.md` (**specification, not yet built** — the four-stage
+`docs/implementation/model-00-overview.md` (the four-stage
 institutional-flow modelling plan; read it before touching `ml/`. Carries the shared no-lookahead
-conventions, the inter-stage contracts, and the note that `ml/baselines.py` imports the missing
-`ml/features.py`, which lives on the unmerged `model/xgboost-direction` branch),
+conventions and the inter-stage contracts. Stages 1–3 are **built**; each stage file's Results
+section records what was measured, negative results included. Still open: `ml/baselines.py`
+imports the missing `ml/features.py`, which lives on the unmerged `model/xgboost-direction`
+branch, so `build_baselines_table()` raises ImportError),
 `docs/implementation/flow-features.md` (outlier-strike + futures-basis features: threshold
 measurements, the OI-units defect, and the per-symbol vs market-level results),
 `docs/data/iv-integrity-audit.md` (price-basis and IV-solver defects + verified fixes),

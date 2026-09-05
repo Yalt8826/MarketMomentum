@@ -1,9 +1,25 @@
 # Institutional-flow modelling — overview and build contract
 
-**Status:** specification. Nothing in this document is built yet.
-**Audience:** the agent (or person) implementing stages 1–3.
+**Status:** built, 2026-09-05. All four stages ship; every stage file's Results
+section records what was measured.
+**Audience:** anyone extending or writing up the model work.
 **Read this file first.** It carries the framing, the shared conventions, and
 the inter-stage contracts. The per-stage files are useless without it.
+
+### Outcomes at a glance
+
+| Stage | Verdict | The number that decides it |
+|---|---|---|
+| 1 — market flow | **Null.** No feature set beats the calendar. | Best AUC margin over `calendar_only`: **+0.002**; four combinations significantly *negative*. Calendar alone: AUC 0.61–0.72. |
+| 1b — quadrants | **Built and useful.** | Delta adjustment is required: raw vs adjusted disagree on **35.8%** of contracts. Direction features are the only block that improves Stage 1. |
+| 2 — regime HMM | **Negative.** No persistent discrete regimes. | Min transition diagonal **never exceeds 0.5 at any k** (0.367 → 0.072); BIC never turns around. |
+| 3 — attribution | **Mixed, leaning negative.** Decomposes but does not identify. | Placebo passes (R² 0.45 vs −0.01) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones for 2 of 3 participants. |
+
+Three of four are negative or null. That is the honest state of the work, and
+the write-up should lead with it rather than with the one stage that produced a
+usable feature. The pipeline is demonstrably capable of detecting signal when
+it is present — the Stage 1 leakage tripwire scores exactly 1.0000, and the
+Stage 3 placebo collapses to zero — which is what makes the nulls credible.
 
 | Stage | File | Builds | Depends on |
 |---|---|---|---|

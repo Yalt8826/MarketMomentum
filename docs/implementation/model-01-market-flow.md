@@ -442,12 +442,17 @@ Both calls recorded in §3 before running anything:
 **The leakage tripwire scores AUC 1.0000 for all three participants.** The
 harness is wired correctly — a stronger statement than any passing unit test.
 
-**The structural check passes decisively.** Pro and Client predictions
-correlate at **−0.897**. The two models were fitted independently, never told
-about each other, and yet learned to move in opposite directions — which is
-what a closed book requires. This is real evidence the models learned market
-structure rather than noise, and it makes the null in §9.1 more credible, not
-less: the pipeline is capable of finding structure when structure is there.
+**The structural check passes**, though it is weaker evidence than it first
+appears. Pro and Client predictions correlate at **−0.897**: the two models
+were fitted independently and never told about each other.
+
+Measured afterwards, while writing up [Stage 2](model-03-regime-hmm.md#83-the-fiiclient-check-is-near-tautological--do-not-count-it),
+the *labels* themselves are already −0.802 correlated (Pro vs Client) — the book
+is closed, so Client is mechanically the other side. Two models that track
+their own labels at all will therefore produce negatively correlated
+predictions. The check confirms the models learned something related to their
+labels; it does **not** independently demonstrate that they recovered market
+structure, and an earlier version of this section claimed it did.
 
 **Stage 1b's direction features carry information.** This answers the question
 left open in [model-02 §7.4](model-02-buildup-quadrants.md). Adding them to the
