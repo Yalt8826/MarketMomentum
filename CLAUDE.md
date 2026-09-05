@@ -118,6 +118,10 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+`docs/implementation/model-00-overview.md` (**specification, not yet built** — the four-stage
+institutional-flow modelling plan; read it before touching `ml/`. Carries the shared no-lookahead
+conventions, the inter-stage contracts, and the note that `ml/baselines.py` imports the missing
+`ml/features.py`, which lives on the unmerged `model/xgboost-direction` branch),
 `docs/implementation/flow-features.md` (outlier-strike + futures-basis features: threshold
 measurements, the OI-units defect, and the per-symbol vs market-level results),
 `docs/data/iv-integrity-audit.md` (price-basis and IV-solver defects + verified fixes),
