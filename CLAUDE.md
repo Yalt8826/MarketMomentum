@@ -41,6 +41,7 @@ Modelling stages (all read the tables above; none is part of the ETL path):
 uv run mktmtm market-flow           # Stage 1: market-level flow model → models/evaluation/
 uv run mktmtm flow-regimes          # Stage 2: pooled HMM → flow_regimes  (~11 min)
 uv run mktmtm flow-attribution      # Stage 3: LLP attribution → flow_attribution
+uv run mktmtm flow-momentum         # Stage 4: does positioning continue? (self-supervised)
 ```
 
 Smoke runs: `make-dataset --limit-symbols RELIANCE,TCS --limit-dates 30`, `process --limit-days 5`,
@@ -68,6 +69,7 @@ ml/market_flow.py    Stage 1 — market-level flow model; market_metrics.py hold
                one-observation-per-date series
 ml/regimes.py  Stage 2 — pooled GaussianHMM over per-symbol flow observables
 ml/attribution.py    Stage 3 — Learning from Label Proportions bridge
+ml/flow_momentum.py  Stage 4 — cross-instrument lead-lag in positioning direction
 pipeline/      process.py — LEGACY JSON twin of etl.py; feeds only the old UI, not the ML path
 backtest/      short-strangle + weekly delta hedge → backtest_results
 ui/            Streamlit control panel; pipeline steps run as detached subprocesses (ui/jobs.py)
@@ -118,6 +120,16 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   aggregate does not reveal it — the writer share barely moves while individual assignments differ.
 - **The calendar-only baseline is the bar for any market-level claim.** The expiry cycle alone
   reaches AUC 0.61–0.72 on next-day participant flow. Stage 1 found no feature set beats it.
+- **Never use causal within-symbol z-scoring to remove symbol fixed effects here.** It subtracts a
+  *slowly updating* expanding mean, so consecutive z-scores share a baseline error and look
+  strongly persistent on a series with no autocorrelation at all — it reported +0.298
+  self-persistence where the raw series measures −0.009. Use the raw per-symbol correlation
+  (`ml/flow_momentum._lead_lag`) instead. The causal z is still correct for its original purpose
+  (comparability across symbols), just not for measuring persistence.
+- **Direction scores share construction.** `ce_writer_frac` and `oi_outlier_direction` are built
+  from the same buckets as `opt_direction` (same-day correlation −0.75 and +0.84), so each appears
+  to "lead" it by inheriting its reversal. Always check the contemporaneous correlation before
+  believing a forward one.
 - **`screen_corporate_actions` blanks, and logs, rather than drops.** A silent filter here is how
   survivorship bias creeps in.
 - **Re-running `make-dataset` alone cannot repair IV/strike/Greek defects** — those are baked into

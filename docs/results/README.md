@@ -11,7 +11,9 @@ full working, but nothing here depends on having read them.
 
 ## 1. Verdict
 
-Four stages were built and run. **Three returned null or negative results.**
+Five stages were built and run. **Three returned null or negative results, one
+succeeded as a feature, and one produced the project's only surviving positive
+finding.**
 
 | Stage | What it tested | Verdict | Deciding number |
 |---|---|---|---|
@@ -19,13 +21,18 @@ Four stages were built and run. **Three returned null or negative results.**
 | **1b** — buildup quadrants | Can open-interest builds be given a direction? | **Success** | Delta adjustment required: raw vs adjusted classification disagrees on **35.8%** of contracts. |
 | **2** — regime HMM | Do symbol-days fall into persistent latent positioning regimes? | **Negative** | Minimum state persistence **never exceeds 0.5 at any state count** (0.367 → 0.072). |
 | **3** — attribution | Can a market-wide flow figure be attributed to individual symbols? | **Mixed, leaning negative** | Decomposes well (R² 0.45) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones. |
+| **4** — flow momentum | Does a directional build continue? | **Split: no momentum, but a real lead** | Positioning direction has ~zero autocorrelation. But futures direction **leads** option direction 1–3 days: +0.030, **77–86% of symbols agree**, reverse ≈ 0. |
 
-**The defensible claim from this work:**
+**The defensible claims from this work:**
 
 > Market-wide flow labels plus per-symbol option features are sufficient to
 > *decompose* an observed aggregate, but not to *identify* which symbols the
 > institutional flow went into. Next-day market-wide flow is predicted better
 > by the expiry calendar than by any derived feature built here.
+
+> Positioning direction does not persist — but **futures positioning leads
+> option positioning by one to three days**, asymmetrically and broadly across
+> symbols. This is the one positive result that survives every control applied.
 
 ---
 
@@ -300,6 +307,63 @@ choosing a linear model. For FII it does not.
 
 ---
 
+## 7a. Stage 4 — flow momentum (split result)
+
+**Task.** Does a directional build in a symbol continue? Self-supervised —
+signal and target both from `flow_features`, so no per-symbol label is needed.
+
+**Why a cross-sectional rank IC.** All NSE stock futures share one monthly
+expiry, so `fut_dte` is near-constant within a date (a **single value on 83.6%
+of dates**, median spread **0**). A within-date rank correlation is therefore
+neutral to both the market-wide factor and the expiry cycle that dominated
+Stage 1.
+
+### No momentum in the signal itself
+
+Raw within-symbol autocorrelation of `q_fut_direction`: **−0.009 / −0.001 /
++0.000 / −0.012 / +0.007** at lags 1/2/3/5/10, positive for only 36–56% of
+symbols. `opt_direction` actively **reverses** (−0.092 at lag 1, negative for
+**98.6%** of symbols) — the bounded-OI mechanism, since a position opened today
+must eventually close.
+
+### But futures lead options
+
+Raw within-symbol correlation, `(c)` = share of symbols agreeing on sign:
+
+| Direction | lag 0 | lag 1 | lag 2 | lag 3 | lag 5 |
+|---|---|---|---|---|---|
+| **futures → options** | −0.218 (99%) | **+0.030 (77%)** | **+0.035 (86%)** | **+0.022 (79%)** | +0.015 (63%) |
+| **options → futures** | −0.218 (99%) | +0.003 (55%) | +0.001 (51%) | +0.002 (55%) | +0.003 (53%) |
+
+**The asymmetry is the result** — symmetric confounds cannot produce it.
+Cross-sectionally the same effect is **+0.047 to +0.055, significant at every
+horizon**, the largest consistent signal in the project (Stage 1's best margin
+was +0.002).
+
+Same-day the relationship is strongly *negative* (−0.218, 99% of symbols):
+futures long buildup coincides with writer-dominated option flow, then option
+positioning turns bullish over the next one to three days. That sign flip is
+what makes it a lead rather than a correlation.
+
+### Two spurious findings caught
+
+`ce_writer_frac` appeared to lead `opt_direction` at **+0.071** — larger than
+the futures lead — but its same-day correlation is **−0.75**; they share
+construction, so it is a mirror of the target's own reversal. The futures lead
+cannot be explained that way (same-day only −0.153).
+
+An intermediate version used causal within-symbol z-scoring to strip symbol
+fixed effects and reported self-persistence of **+0.2979** with smooth decay —
+by far the project's largest number. It was an artefact: the causal z subtracts
+a *slowly updating* expanding mean, so consecutive z-scores share a baseline
+error and look persistent on a series with zero autocorrelation. **The standard
+repair for symbol fixed effects introduced a worse confound than the one it
+removed.**
+
+→ Detail: [`model-05-flow-momentum.md`](../implementation/model-05-flow-momentum.md)
+
+---
+
 ## 8. Cross-cutting findings
 
 Results that are not any single stage's output but emerged from the work.
@@ -411,6 +475,7 @@ uv run python scripts/measure_delta_adjustment.py 24
 uv run mktmtm market-flow                        # Stage 1    ~3m57s
 uv run mktmtm flow-regimes --states 2,3,4,5,6,8 --restarts 6   # Stage 2  ~10m54s
 uv run mktmtm flow-attribution                   # Stage 3    ~25s
+uv run mktmtm flow-momentum                      # Stage 4    ~20s
 ```
 
 Artifacts land in `models/evaluation/*.json` (gitignored — they stay local;

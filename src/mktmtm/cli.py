@@ -632,6 +632,103 @@ def _print_attribution_summary(summary: dict[str, Any]) -> None:
         typer.echo(f"\nrows written {summary['_rows_written']:,}")
 
 
+@app.command(name="flow-momentum")
+def flow_momentum(
+    parquet: Annotated[
+        bool,
+        typer.Option(
+            "--parquet/--no-parquet",
+            help="Also export data/processed/flow_momentum.parquet.",
+        ),
+    ] = True,
+) -> None:
+    """Does whale positioning continue? Cross-sectional rank IC at 1-10 day horizons.
+
+    Self-supervised — signal and target both come from flow_features, so this
+    needs no per-symbol institutional label. A within-date rank correlation is
+    neutral to the market-wide factor and to the expiry calendar (all NSE stock
+    futures share one expiry, so dte is near-constant within a date). Intervals
+    come from a moving-block bootstrap sized to the forward horizon, because
+    overlapping windows make consecutive daily ICs correlated by construction.
+    """
+    import psycopg2
+
+    from mktmtm.ml.flow_momentum import run_flow_momentum
+    from mktmtm.storage.db import build_dsn
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        result = run_flow_momentum(conn, parquet=parquet)
+    finally:
+        conn.close()
+    _print_momentum_table(result)
+
+
+def _print_momentum_table(result: dict[str, Any]) -> None:
+    """One block per forward target; rows are signals, columns horizons."""
+    meta = result.get("_meta", {})
+    horizons = [str(h) for h in meta.get("horizons", [])]
+    typer.echo(
+        f"\n{meta.get('rows', 0):,} symbol-days · {meta.get('symbols', 0)} symbols · "
+        f"{meta.get('dates', 0)} dates · {meta.get('period', '?')}"
+    )
+
+    width = 28
+
+    def _row(name: str, cells: dict[str, Any]) -> None:
+        parts = "".join(
+            f"{cells.get(h, {}).get('mean_ic', float('nan')):+.4f}"
+            f"{'*' if cells.get(h, {}).get('significant') else ' '}   "
+            for h in horizons
+        )
+        typer.echo(f"{name:<{width}}{parts}")
+
+    for target, signals in result.get("grid", {}).items():
+        typer.echo(f"\n── forward target: {target} " + "─" * 30)
+        typer.echo(f"{'signal':<{width}}" + "".join(f"h={h:<9}" for h in horizons))
+        for name, cells in signals.items():
+            marker = "  (self)" if name == target else ""
+            _row(name + marker, cells)
+
+    leadlag = result.get("within_symbol_leadlag", {})
+    if leadlag:
+        typer.echo(
+            "\n── raw within-symbol lead-lag (no ranking, no normalisation) " + "─" * 3
+        )
+        typer.echo("   corr(signal_t, target_t+lag); (c) = share of symbols agreeing on sign")
+        for target, signals in leadlag.items():
+            typer.echo(f"  → target: {target}")
+            for name, cells in signals.items():
+                if name == target:
+                    continue
+                parts = "".join(
+                    f"lag{lag}:{c['mean']:+.4f}({c['consistency']:.0%})  "
+                    for lag, c in sorted(cells.items(), key=lambda kv: int(kv[0]))
+                )
+                typer.echo(f"    {name:<24}{parts}")
+
+    contemporaneous = result.get("contemporaneous", {})
+    if contemporaneous:
+        typer.echo("\n── contemporaneous IC (same day; exposes shared construction) ──")
+        for target, pairs in contemporaneous.items():
+            for name, value in pairs.items():
+                typer.echo(f"  {name:<26} vs {target:<20} {value:+.4f}")
+
+    typer.echo("\n── baselines " + "─" * 42)
+    for name, cells in result.get("baselines", {}).items():
+        _row(name, cells)
+
+    typer.echo(
+        f"\n* = 95% block-bootstrap CI excludes zero.  "
+        f"{result.get('n_tests', 0)} cells tested; "
+        f"~{result.get('expected_false_positives', 0):.1f} expected to clear by chance."
+    )
+    typer.echo(
+        "Self cells (signal == target) are contaminated by bounded-OI reversal; "
+        "read the off-diagonal."
+    )
+
+
 @app.command(name="test-gex")
 def test_gex(
     limit_symbols: Annotated[

@@ -28,6 +28,7 @@ from sklearn.metrics import roc_auc_score  # type: ignore[import-untyped]
 __all__ = [
     "accuracy_and_base_rate",
     "block_bootstrap_ci",
+    "block_bootstrap_mean_ci",
     "block_bootstrap_margin_ci",
     "directional_auc",
     "flow_spearman",
@@ -132,6 +133,41 @@ def block_bootstrap_ci(
                           s_all.iloc[idx].reset_index(drop=True))
     lo, hi = np.quantile(draws, [alpha / 2.0, 1.0 - alpha / 2.0])
     return float(lo), float(hi)
+
+
+def block_bootstrap_mean_ci(
+    values: pd.Series,
+    *,
+    block: int = BLOCK_DAYS,
+    n_boot: int = N_BOOT,
+    seed: int = RANDOM_SEED,
+    alpha: float = 0.05,
+) -> tuple[float, float, float]:
+    """``(mean, lo, hi)`` for the mean of an autocorrelated daily series.
+
+    Written for **overlapping-window** statistics, where the naive t-stat is
+    not merely optimistic but structurally wrong. A daily information
+    coefficient measured against a forward ``h``-day target shares ``h-1`` of
+    its future days with the next day's value, so consecutive observations are
+    mechanically correlated. Treating them as independent inflates the t-stat
+    by roughly ``sqrt(h)``.
+
+    Pass a block at least twice the forward horizon so each resampled block
+    carries that dependence intact.
+    """
+    clean = values.dropna().reset_index(drop=True)
+    n = len(clean)
+    mean = float(clean.mean()) if n else float("nan")
+    if n < block * 2:
+        return mean, float("nan"), float("nan")
+
+    rng = np.random.default_rng(seed)
+    draws = np.empty(n_boot, dtype="float64")
+    array = clean.to_numpy()
+    for i in range(n_boot):
+        draws[i] = float(array[_moving_blocks(n, block, rng)].mean())
+    lo, hi = np.quantile(draws, [alpha / 2.0, 1.0 - alpha / 2.0])
+    return mean, float(lo), float(hi)
 
 
 def block_bootstrap_margin_ci(
