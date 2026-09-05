@@ -122,6 +122,13 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   premium change: a call premium rises when the underlying rises regardless of who traded. Raw
   and adjusted disagree on 35.8% of contracts (`scripts/measure_delta_adjustment.py`), and the
   aggregate does not reveal it — the writer share barely moves while individual assignments differ.
+- **The pre-2023 shareholding XBRL keeps DEAD CATEGORIES as explicit zeros.**
+  `ForeignInstitutionsMember` is the legacy FII bucket, emptied when SEBI folded FII into FPI in
+  2014, and it sits in the same filing as `InstitutionsForeignPortfolioInvestorMember` carrying the
+  real holding. Resolving aliases by first-present picked the zero and reported **no foreign
+  holding for every filing before 2023** — and inflated DII by the same amount through the
+  institutions-minus-foreign fallback. `_pick` prefers the first **non-zero** alias for this
+  reason. Sanity-check any new holder column for a discontinuity at the 2023 boundary.
 - **`shareholding` is the per-symbol institutional label; use SHARE COUNTS, not percentages.**
   A holding percentage moves on a buyback or an issue with nobody having traded; the count only
   moves when somebody buys or sells. The XBRL stores percentages as *fractions* (0.1720 = 17.20%),
@@ -136,10 +143,12 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   so 0 of 158 rows on the day measured were in our 217 symbols. Block deals reach large caps but
   are rare (~2/day). See `docs/implementation/deals-label.md`.
 - **Price momentum is the bar for any per-symbol accumulation claim**, the way the calendar is at
-  market level. FII accumulation tracks momentum at IC +0.335, and `q_fut_direction` — which has
-  price direction baked into its construction (price up + OI up = long buildup) — posts a raw
-  +0.250 that collapses to the noise floor once momentum is partialled out. Always report the
-  partial, never the raw IC alone.
+  market level. FII accumulation tracks momentum at IC +0.360, and `q_fut_direction` — which has
+  price direction baked into its construction (price up + OI up = long buildup) — posts a large raw
+  IC that collapses to the shuffled baseline once momentum is partialled out, and flips sign
+  between momentum-chasing FII and contrarian mutual funds. Always report the partial, never the
+  raw IC alone; assume any price-derived feature is a momentum proxy until the partial says
+  otherwise.
 - **The calendar-only baseline is the bar for any market-level claim.** The expiry cycle alone
   reaches AUC 0.61–0.72 on next-day participant flow. Stage 1 found no feature set beats it.
 - **Never use causal within-symbol z-scoring to remove symbol fixed effects here.** It subtracts a

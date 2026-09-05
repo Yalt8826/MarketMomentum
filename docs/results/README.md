@@ -22,7 +22,7 @@ finding.**
 | **2** — regime HMM | Do symbol-days fall into persistent latent positioning regimes? | **Negative** | Minimum state persistence **never exceeds 0.5 at any state count** (0.367 → 0.072). |
 | **3** — attribution | Can a market-wide flow figure be attributed to individual symbols? | **Mixed, leaning negative** | Decomposes well (R² 0.45) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones. |
 | **4** — flow momentum | Does a directional build continue? | **Split: a real lead, but not a whale one** | No momentum (autocorrelation ≈ 0). Futures **leads** options at 2–3 days (partial +0.033, 84% of symbols). But it is **flat across activity terciles**, so it is microstructure, not institutional. |
-| **5** — accumulation detection | Did institutions accumulate this stock? | **Split — first surviving positive** | FII accumulation is a momentum proxy (features collapse to noise). But `basis_excess` detects **DII** accumulation: partial IC **+0.074, 17/19 quarters**, surviving the momentum control. |
+| **5** — accumulation detection | Did institutions accumulate this stock? | **First surviving positive result** | FII accumulation is a momentum proxy (features collapse to the shuffled baseline). But `basis_excess` detects **mutual-fund** accumulation: partial IC **+0.137, 18/19 quarters**, 98% retained under the control, visible within 30 days. |
 
 **The defensible claims from this work:**
 
@@ -407,38 +407,53 @@ FII/DII shareholding, ~20 filings × ~200 symbols. The primary baseline is
 the expiry calendar played in Stage 1: the obvious explanation that must be
 ruled out before any F&O feature earns credit.
 
-### The result: foreign and domestic institutions behave oppositely
+### The result: the signal is in actively managed mutual funds
 
-| Cell | Momentum IC | Best raw | **Best partial** | Positive periods |
+| Holder | Momentum IC | `basis_excess` raw | **Partial (momentum controlled)** | Positive periods |
 |---|---|---|---|---|
-| fii:contemporaneous | **+0.335** | +0.250 | +0.048 | 62% of 16 |
-| dii:contemporaneous | −0.038 | +0.076 | **+0.074** | **89% of 19** |
+| **FII** | **+0.360** | −0.057 | −0.054 | 11% of 19 |
+| DII | −0.122 | +0.094 | +0.090 | 95% |
+| **Mutual funds** | −0.064 | **+0.140** | **+0.137** | **18 of 19** |
+| Insurers | −0.098 | −0.029 | −0.035 | 42% |
 
-**FII accumulation is a price-momentum phenomenon.** Foreign investors buy what
-is rising (IC +0.335, 94% of periods). `q_fut_direction_mean` posts a raw
-+0.250 that collapses to +0.048 once momentum is partialled out — the shuffled
-baseline is +0.025 at the same 62% positive rate. Run the control the other way
-and momentum retains +0.233 given the feature. In hindsight near-tautological:
-`q_fut_direction` is the price-versus-OI quadrant, so price direction is built
-into it.
+**FII accumulation is a price-momentum phenomenon** (IC +0.360). No F&O feature
+survives its control — the best collapses to the shuffled baseline. This is the
+more robustly established of the two findings, and it is negative.
 
-**Domestic institutions are contrarian** — their accumulation correlates
-*negatively* with momentum (−0.038 / −0.095 / −0.131 across windows). They buy
-weakness, consistent with steady SIP inflows deployed on dips. With momentum no
-longer the confound, something else becomes visible:
+**Domestic institutions are contrarian** (−0.122): they buy weakness,
+consistent with SIP inflows deployed on dips. With momentum no longer dominant,
+a real signal appears.
 
-**`basis_excess_mean` detects DII accumulation** at partial IC **+0.0735**,
-retaining 97% of its raw value under the momentum control, positive in **17 of
-19 quarters** (binomial p = 0.00036; Bonferroni over ~90 cells, p = 0.033).
-Mean futures basis above cost of carry ranks symbols by how much domestic
-institutions accumulated. Reading: accumulation creates financing demand, and
-that pressure shows in the basis regardless of price direction.
+**Mean futures basis above carry detects mutual-fund accumulation**: partial IC
+**+0.1374**, retaining **98%** of its raw value under the momentum control,
+positive in **18 of 19 quarters** (binomial p = 0.000038; Bonferroni over ~120
+cells, p = 0.0046). Shuffled baseline: +0.0014 at 47%. Isolating mutual funds
+from insurers raises the IC by half — insurers show nothing.
 
-**Limits, stated plainly:** the effect is small (consistency, not size, is what
-makes it credible); 19 periods is few; ~90 cells were examined so the Bonferroni
-correction only just holds; DII mixes mutual funds (mechanical SIP deployment)
-with insurers (discretionary); and the feature set was not pre-registered. It is
-a real but provisional result.
+**The two are counterparties.** `basis_excess` carries opposite signs for FII
+(−0.054) and mutual funds (+0.137): a basis rich to carry goes with domestic
+funds accumulating *and* foreign investors distributing. One trade, both sides
+— a coherence check neither number gives alone.
+
+**It detects accumulation in progress, not before it.** Using only the first 30
+days of a quarter the signal still reaches +0.085 (11 of 13 quarters), while
+the *prior* quarter's basis says nothing. That is the shape the project wanted:
+detect that they have been buying, not predict that they will. Since
+shareholding is published ~6 weeks after quarter end, a detector firing 30 days
+in leads public disclosure by about four months.
+
+**A label bug was found and fixed mid-stage.** `fii_shares` read zero for 100%
+of 2021 and 50% of 2022 filings — the pre-2023 taxonomy keeps the legacy FII
+bucket as an explicit zero beside the FPI member carrying the real holding, and
+the alias resolver took the first *present* member. Through the domestic
+fallback it inflated DII by the same amount. Both targets were wrong and
+nothing failed. Fixed by preferring the first non-zero alias; holdings are now
+smooth across the boundary.
+
+**Limits:** the effect is modest (consistency, not size, makes it credible); 19
+periods is few; ~120 cells were examined; the holder split was not
+pre-registered; and 2021–2026 was a period of unprecedented Indian retail
+inflow growth, so the contrarian DII behaviour may be regime-specific.
 
 Design, traps and full results:
 [`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md).

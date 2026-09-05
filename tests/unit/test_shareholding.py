@@ -243,3 +243,48 @@ def test_direct_domestic_member_wins_over_the_fallback() -> None:
     """The subtraction only applies when the direct member is genuinely absent."""
     out = parse_shareholding(_xbrl())
     assert out["dii_shares"] == 300_000
+
+
+def test_a_dead_category_holding_zero_does_not_outrank_a_live_one() -> None:
+    """Pre-2023 filings keep the legacy FII bucket as an explicit zero.
+
+    SEBI folded FII into FPI in 2014, so ForeignInstitutionsMember reads 0
+    while InstitutionsForeignPortfolioInvestorMember carries the real holding.
+    Taking the first *present* alias reported no foreign holding for every
+    filing before 2023 — and inflated the domestic holding by the same amount
+    through the institutions-minus-foreign fallback.
+    """
+    xml = (
+        "<xbrl>"
+        '<xbrli:context id="dead"><xbrldi:explicitMember>'
+        "in-bse-shp:ForeignInstitutionsMember</xbrldi:explicitMember></xbrli:context>"
+        '<xbrli:context id="live"><xbrldi:explicitMember>'
+        "in-bse-shp:InstitutionsForeignPortfolioInvestorMember"
+        "</xbrldi:explicitMember></xbrli:context>"
+        '<xbrli:context id="all"><xbrldi:explicitMember>'
+        "in-bse-shp:InstitutionsMember</xbrldi:explicitMember></xbrli:context>"
+        '<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="dead">0'
+        "</in-bse-shp:NumberOfFullyPaidUpEquityShares>"
+        '<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="live">277000000'
+        "</in-bse-shp:NumberOfFullyPaidUpEquityShares>"
+        '<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="all">525000000'
+        "</in-bse-shp:NumberOfFullyPaidUpEquityShares>"
+        "</xbrl>"
+    )
+    out = parse_shareholding(xml)
+    assert out["fii_shares"] == 277_000_000
+    # And the domestic fallback must not inherit the error.
+    assert out["dii_shares"] == 525_000_000 - 277_000_000
+
+
+def test_a_genuinely_empty_category_stays_zero_not_null() -> None:
+    """When every alias really is zero, that is a holding of zero, not missing."""
+    xml = (
+        "<xbrl>"
+        '<xbrli:context id="a"><xbrldi:explicitMember>'
+        "in-bse-shp:ForeignInstitutionsMember</xbrldi:explicitMember></xbrli:context>"
+        '<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="a">0'
+        "</in-bse-shp:NumberOfFullyPaidUpEquityShares>"
+        "</xbrl>"
+    )
+    assert parse_shareholding(xml)["fii_shares"] == 0

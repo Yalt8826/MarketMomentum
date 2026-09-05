@@ -98,7 +98,7 @@ _UA = (
 _MEMBER_ALIASES: dict[str, tuple[str, ...]] = {
     "fii": (
         "InstitutionsForeignMember",              # 2023+ taxonomy, total
-        "ForeignInstitutionsMember",              # pre-2023 taxonomy, total
+        "ForeignInstitutionsMember",              # pre-2023 total (legacy FII)
         "InstitutionsForeignPortfolioInvestorMember",
         "ForeignPortfolioInvestorMember",         # subsets, last resort
     ),
@@ -158,12 +158,31 @@ def _facts(xml: str, tag: str, contexts: dict[str, str]) -> dict[str, str]:
 
 
 def _pick(facts: dict[str, str], aliases: tuple[str, ...]) -> str | None:
-    """First alias present in ``facts``, matched case-insensitively."""
+    """First alias with a **non-zero** value; falls back to the first present.
+
+    Preferring the first *present* alias is not enough. The pre-2023 taxonomy
+    keeps dead categories as explicit zeros: ``ForeignInstitutionsMember`` is
+    the legacy FII bucket, emptied when SEBI folded FII into FPI in 2014, and
+    it sits in the same filing as
+    ``InstitutionsForeignPortfolioInvestorMember`` which carries the actual
+    holding. Taking the first present alias picked the zero and reported **no
+    foreign holding for every filing before 2023** — and, through the domestic
+    fallback (institutions minus foreign), inflated the domestic holding by the
+    same amount.
+
+    A genuinely empty category is still representable: when every present alias
+    is zero, the zero is returned rather than ``None``.
+    """
+    first_present: str | None = None
     for name in aliases:
         value = facts.get(name.lower())
-        if value is not None:
+        if value is None:
+            continue
+        if first_present is None:
+            first_present = value
+        if _number(value):  # non-zero and parseable
             return value
-    return None
+    return first_present
 
 
 def _number(value: str | None) -> float | None:
