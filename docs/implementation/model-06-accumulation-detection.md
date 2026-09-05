@@ -164,6 +164,135 @@ out before any F&O feature gets credit.
 
 ## 9. Results
 
-*To be filled in. Lead with the margin over price momentum, not the absolute
-IC — and state how many of the ~20 periods were positive before quoting any
-mean.*
+**Run 2026-09-05.** `uv run mktmtm accumulation`, 60s.
+2,888 (symbol, filing) rows · 209 symbols · 19 filing periods · median window
+61 trading days. `models/evaluation/accumulation.json`.
+
+**126 of 3,753 periods (3.4%) were dropped as corporate actions.** Left in,
+they put the 99th percentile of "accumulation" at FIIs acquiring **31% of a
+company in one quarter**, which no institution does organically.
+
+### 9.1 The headline: FII and DII behave in opposite ways
+
+| Cell | Price momentum IC | Best raw feature | **Best partial (momentum controlled)** | Positive periods |
+|---|---|---|---|---|
+| fii:contemporaneous | **+0.335** | +0.250 | +0.048 | 62% of 16 |
+| fii:early | **+0.281** | +0.220 | −0.049 | 42% of 12 |
+| fii:lead | **+0.175** | +0.133 | +0.036 | 75% of 16 |
+| dii:contemporaneous | −0.038 | +0.076 | **+0.074** | **89% of 19** |
+| dii:early | −0.095 | −0.097 | +0.041 | 69% of 13 |
+| dii:lead | −0.131 | −0.105 | +0.033 | 67% of 18 |
+
+Two distinct results, and they need reading separately.
+
+### 9.2 Foreign institutions: the F&O signal is a momentum proxy
+
+FII accumulation tracks price momentum at **IC +0.335, positive in 94% of
+periods**. Foreign investors buy what is going up, emphatically.
+
+`q_fut_direction_mean` posts a raw IC of **+0.250** — which looks like a strong
+detector until momentum is partialled out, at which point it collapses to
+**+0.048 with 62% of periods positive**. The shuffled baseline is +0.025 at
+62%. It is at the noise floor.
+
+The asymmetry settles it: run the control the other way and **momentum retains
++0.233 given the feature**, while the feature retains 19% of its IC given
+momentum. If the two were complementary both would survive; if they measured
+one thing both would collapse. Here one survives and one does not.
+
+In hindsight this is near-tautological. `q_fut_direction` is the futures
+price-versus-OI quadrant — *price up with OI up is a long buildup* — so price
+direction is baked into its construction. It could hardly fail to correlate
+with price momentum.
+
+**For FII accumulation, the F&O features add nothing beyond the price.**
+
+### 9.3 Domestic institutions are contrarian — and one signal survives
+
+DII accumulation has a **negative** relationship with price momentum: −0.038
+contemporaneous, −0.095 early, −0.131 lead. **Domestic institutions buy into
+weakness.** That is economically coherent — domestic funds deploy steady SIP
+inflows on dips, where foreign portfolio flows chase performance — and it is a
+genuine behavioural difference measured here for the first time in this
+project.
+
+It also means momentum is no longer the confound for this half of the data,
+and something else can be seen.
+
+**`basis_excess_mean` detects DII accumulation:**
+
+| Measure | Value |
+|---|---|
+| Raw IC | +0.0759 |
+| **Partial IC, momentum controlled** | **+0.0735** (97% retained) |
+| Periods positive | **17 of 19** |
+| Binomial p (one-sided) | **0.00036** |
+| Bonferroni over ~90 tested cells | **0.033** |
+| Shuffled baseline | +0.0157, 63% positive |
+
+The mean futures basis above cost of carry, over the quarter, ranks symbols by
+how much domestic institutions accumulated — and unlike every FII result it
+**survives the momentum control essentially intact**, losing only 3% of its IC.
+
+Economic reading: accumulation creates financing demand. An institution
+building a position, or the desks facilitating it, leaves futures trading rich
+to carry — and that pressure is visible in the basis independent of which way
+the price went.
+
+`gex_mean` shows the same sign across all three DII windows (+0.058 / +0.041 /
++0.029), which is consistent but individually weak.
+
+### 9.4 Calibration
+
+- **Leak tripwire: +1.0000 in every cell.** Harness correct.
+- **Shuffled: +0.016 to +0.025**, 56–63% positive. That is the floor every
+  partial result must clear, and the FII results do not.
+- **Size: −0.015 to −0.030**, never material. The confound that made pooled
+  GEX H1 an artefact is not operating here.
+- **Persistence: +0.19 to +0.21**, 83–93% positive, in every cell. Institutions
+  do accumulate across consecutive quarters, as expected.
+
+### 9.5 Honest limits on the one positive result
+
+- **The effect is small.** IC +0.0735 ranks symbols weakly. Its consistency —
+  17 of 19 quarters — is what makes it credible, not its size.
+- **19 periods is not many.** One unusual quarter moves the mean, which is why
+  the positive rate and the binomial test are reported rather than a t-stat on
+  18 degrees of freedom.
+- **Multiple testing is real.** Roughly 90 cells were examined and this is the
+  best. Bonferroni holds at p = 0.033, but only just, and a result that needs
+  the correction to survive should be treated as provisional.
+- **DII is not a single actor.** It aggregates mutual funds, insurers and
+  banks. Mutual-fund flow is driven by retail SIP subscriptions rather than
+  conviction, so part of what is being detected may be *inflow deployment*
+  rather than informed accumulation.
+- **Not out-of-sample.** The feature set was not chosen in advance of seeing
+  these results.
+
+### 9.6 What this means for the project
+
+For the first time, a signal derived from the F&O book detects per-symbol
+institutional activity, against an external label, surviving the dominant
+confound. That is the result the project has been trying to produce.
+
+It is also modest, single, provisional, and about *domestic* institutions
+rather than the foreign flow usually meant by "whales".
+
+**The FII conclusion is the more robust one, and it is negative**: foreign
+institutional accumulation is predicted by price momentum, and the option and
+futures features tested here add nothing to it.
+
+## 10. Next steps
+
+1. **Confirm `basis_excess` out-of-sample.** The cleanest test available is the
+   monthly mutual-fund portfolio data (§6 of `deals-label.md`): ~60 observations
+   per symbol instead of 20, an independent source, and MF is the largest DII
+   component. If the basis effect reproduces there it stops being provisional.
+2. **Split DII.** `mf_shares` and `insurance_shares` are already in the table.
+   If the effect is concentrated in insurers (slow, discretionary) rather than
+   mutual funds (mechanical SIP deployment), it is far more likely to be
+   informed accumulation.
+3. **Pre-register a feature set** and re-run. The multiple-testing exposure is
+   the weakest part of §9.3 and it is cheap to remove.
+4. **Drop the FII line of enquiry**, or reframe it: without a feature that
+   beats momentum there is nothing here to build on.

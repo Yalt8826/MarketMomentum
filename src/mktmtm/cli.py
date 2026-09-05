@@ -863,6 +863,105 @@ def fetch_shareholding(
             typer.echo(f"    ! {err}")
 
 
+@app.command(name="accumulation")
+def accumulation(
+    holder: Annotated[
+        list[str] | None,
+        typer.Option("--holder", help="fii / dii / mf; repeatable. Default: fii, dii."),
+    ] = None,
+    window: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--window",
+            help="contemporaneous / early / lead; repeatable. Default: all three.",
+        ),
+    ] = None,
+    keep_corporate_actions: Annotated[
+        bool,
+        typer.Option(
+            "--keep-corporate-actions",
+            help="Do NOT drop periods whose share count moved on a split or bonus.",
+        ),
+    ] = False,
+) -> None:
+    """Stage 5: detect institutional accumulation from the F&O footprint.
+
+    Nowcasting, not forecasting — given a symbol's F&O activity over a window,
+    did institutions accumulate the underlying stock during it? Evaluated as a
+    cross-sectional rank IC per filing period against SEBI shareholding.
+
+    Read the margin over PRICE MOMENTUM, not the absolute IC: institutions buy
+    what is going up, so a signal that only rediscovers that has found nothing.
+    """
+    import psycopg2
+
+    from mktmtm.ml.accumulation import WINDOWS, run_accumulation
+    from mktmtm.storage.db import build_dsn
+
+    holders = tuple(holder) if holder else ("fii", "dii")
+    windows = tuple(window) if window else WINDOWS
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        summary = run_accumulation(
+            conn, holders=holders, windows=windows,  # type: ignore[arg-type]
+            drop_corporate_actions=not keep_corporate_actions,
+        )
+    finally:
+        conn.close()
+    _print_accumulation(summary)
+
+
+def _print_accumulation(summary: dict[str, Any]) -> None:
+    """Baselines first — price momentum is the bar, not chance."""
+    for key, result in summary.items():
+        if "error" in result:
+            typer.echo(f"\n{key}: {result['error']}")
+            continue
+        meta = result.get("_meta", {})
+        typer.echo(
+            f"\n── {key} ── {meta.get('rows', 0):,} rows · "
+            f"{meta.get('symbols', 0)} symbols · {meta.get('periods', 0)} periods · "
+            f"median window {meta.get('median_window_days', 0):.0f}d"
+        )
+        typer.echo(f"   {'':<26}{'mean IC':>9}{'median':>9}{'pos rate':>10}{'n':>5}")
+        for name, cell in sorted(
+            result.get("baselines", {}).items(),
+            key=lambda kv: -abs(kv[1]["mean_ic"]),
+        ):
+            typer.echo(
+                f"   [base] {name:<19}{cell['mean_ic']:+9.4f}{cell['median_ic']:+9.4f}"
+                f"{cell['positive_rate']:>9.0%}{int(cell['periods']):>5}"
+            )
+        top = sorted(
+            result.get("features", {}).items(),
+            key=lambda kv: -abs(kv[1]["mean_ic"]),
+        )[:5]
+        for name, cell in top:
+            typer.echo(
+                f"   {name:<26}{cell['mean_ic']:+9.4f}{cell['median_ic']:+9.4f}"
+                f"{cell['positive_rate']:>9.0%}{int(cell['periods']):>5}"
+            )
+        partial = result.get("partial_vs_momentum", {})
+        if partial:
+            typer.echo("   --- with price momentum partialled out ---")
+            for name, cell in sorted(
+                partial.items(), key=lambda kv: -abs(kv[1]["mean_ic"])
+            )[:4]:
+                typer.echo(
+                    f"   {name:<26}{cell['mean_ic']:+9.4f}{cell['median_ic']:+9.4f}"
+                    f"{cell['positive_rate']:>9.0%}{int(cell['periods']):>5}"
+                )
+        reverse = result.get("momentum_partial_vs_best") or {}
+        best_partial = result.get("best_partial_ic")
+        if best_partial is not None and reverse:
+            typer.echo(
+                f"   best surviving = {result.get('best_partial_feature')} "
+                f"({best_partial:+.4f}); momentum given it "
+                f"{reverse.get('mean_ic', float('nan')):+.4f}"
+            )
+
+
 @app.command(name="test-gex")
 def test_gex(
     limit_symbols: Annotated[

@@ -44,6 +44,7 @@ uv run mktmtm market-flow           # Stage 1: market-level flow model → model
 uv run mktmtm flow-regimes          # Stage 2: pooled HMM → flow_regimes  (~11 min)
 uv run mktmtm flow-attribution      # Stage 3: LLP attribution → flow_attribution
 uv run mktmtm flow-momentum         # Stage 4: does positioning continue? (self-supervised)
+uv run mktmtm accumulation          # Stage 5: detect accumulation vs shareholding label
 ```
 
 Smoke runs: `make-dataset --limit-symbols RELIANCE,TCS --limit-dates 30`, `process --limit-days 5`,
@@ -72,6 +73,7 @@ ml/market_flow.py    Stage 1 — market-level flow model; market_metrics.py hold
 ml/regimes.py  Stage 2 — pooled GaussianHMM over per-symbol flow observables
 ml/attribution.py    Stage 3 — Learning from Label Proportions bridge
 ml/flow_momentum.py  Stage 4 — cross-instrument lead-lag in positioning direction
+ml/accumulation.py   Stage 5 — nowcasting institutional accumulation vs shareholding
 pipeline/      process.py — LEGACY JSON twin of etl.py; feeds only the old UI, not the ML path
 backtest/      short-strangle + weekly delta hedge → backtest_results
 ui/            Streamlit control panel; pipeline steps run as detached subprocesses (ui/jobs.py)
@@ -133,6 +135,11 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   structurally exclude the F&O universe**: the 0.5%-of-listed-shares threshold selects microcaps,
   so 0 of 158 rows on the day measured were in our 217 symbols. Block deals reach large caps but
   are rare (~2/day). See `docs/implementation/deals-label.md`.
+- **Price momentum is the bar for any per-symbol accumulation claim**, the way the calendar is at
+  market level. FII accumulation tracks momentum at IC +0.335, and `q_fut_direction` — which has
+  price direction baked into its construction (price up + OI up = long buildup) — posts a raw
+  +0.250 that collapses to the noise floor once momentum is partialled out. Always report the
+  partial, never the raw IC alone.
 - **The calendar-only baseline is the bar for any market-level claim.** The expiry cycle alone
   reaches AUC 0.61–0.72 on next-day participant flow. Stage 1 found no feature set beats it.
 - **Never use causal within-symbol z-scoring to remove symbol fixed effects here.** It subtracts a

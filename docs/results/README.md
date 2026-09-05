@@ -22,6 +22,7 @@ finding.**
 | **2** — regime HMM | Do symbol-days fall into persistent latent positioning regimes? | **Negative** | Minimum state persistence **never exceeds 0.5 at any state count** (0.367 → 0.072). |
 | **3** — attribution | Can a market-wide flow figure be attributed to individual symbols? | **Mixed, leaning negative** | Decomposes well (R² 0.45) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones. |
 | **4** — flow momentum | Does a directional build continue? | **Split: a real lead, but not a whale one** | No momentum (autocorrelation ≈ 0). Futures **leads** options at 2–3 days (partial +0.033, 84% of symbols). But it is **flat across activity terciles**, so it is microstructure, not institutional. |
+| **5** — accumulation detection | Did institutions accumulate this stock? | **Split — first surviving positive** | FII accumulation is a momentum proxy (features collapse to noise). But `basis_excess` detects **DII** accumulation: partial IC **+0.074, 17/19 quarters**, surviving the momentum control. |
 
 **The defensible claims from this work:**
 
@@ -393,7 +394,7 @@ removed.**
 
 ---
 
-## 7b. Stage 5 — accumulation detection (specified, not yet run)
+## 7b. Stage 5 — accumulation detection (run 2026-09-05)
 
 After Stage 4 the project's framing was corrected: the goal is **detection**
 (has an institution been accumulating this stock?) not **forecasting** (will
@@ -406,7 +407,40 @@ FII/DII shareholding, ~20 filings × ~200 symbols. The primary baseline is
 the expiry calendar played in Stage 1: the obvious explanation that must be
 ruled out before any F&O feature earns credit.
 
-Design, traps and acceptance criteria:
+### The result: foreign and domestic institutions behave oppositely
+
+| Cell | Momentum IC | Best raw | **Best partial** | Positive periods |
+|---|---|---|---|---|
+| fii:contemporaneous | **+0.335** | +0.250 | +0.048 | 62% of 16 |
+| dii:contemporaneous | −0.038 | +0.076 | **+0.074** | **89% of 19** |
+
+**FII accumulation is a price-momentum phenomenon.** Foreign investors buy what
+is rising (IC +0.335, 94% of periods). `q_fut_direction_mean` posts a raw
++0.250 that collapses to +0.048 once momentum is partialled out — the shuffled
+baseline is +0.025 at the same 62% positive rate. Run the control the other way
+and momentum retains +0.233 given the feature. In hindsight near-tautological:
+`q_fut_direction` is the price-versus-OI quadrant, so price direction is built
+into it.
+
+**Domestic institutions are contrarian** — their accumulation correlates
+*negatively* with momentum (−0.038 / −0.095 / −0.131 across windows). They buy
+weakness, consistent with steady SIP inflows deployed on dips. With momentum no
+longer the confound, something else becomes visible:
+
+**`basis_excess_mean` detects DII accumulation** at partial IC **+0.0735**,
+retaining 97% of its raw value under the momentum control, positive in **17 of
+19 quarters** (binomial p = 0.00036; Bonferroni over ~90 cells, p = 0.033).
+Mean futures basis above cost of carry ranks symbols by how much domestic
+institutions accumulated. Reading: accumulation creates financing demand, and
+that pressure shows in the basis regardless of price direction.
+
+**Limits, stated plainly:** the effect is small (consistency, not size, is what
+makes it credible); 19 periods is few; ~90 cells were examined so the Bonferroni
+correction only just holds; DII mixes mutual funds (mechanical SIP deployment)
+with insurers (discretionary); and the feature set was not pre-registered. It is
+a real but provisional result.
+
+Design, traps and full results:
 [`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md).
 
 ---

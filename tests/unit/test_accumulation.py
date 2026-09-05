@@ -1,0 +1,264 @@
+"""Unit tests for mktmtm.ml.accumulation.
+
+All pure, no database. The two that matter are the corporate-action detector
+(left unfiltered, splits put the 99th percentile at FIIs acquiring 31% of a
+company in one quarter) and the partial-IC control, which is what separates a
+genuine signal from a price-momentum proxy.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from mktmtm.ml.accumulation import (
+    EARLY_DAYS,
+    MEAN_FEATURES,
+    MIN_DAYS_IN_WINDOW,
+    TAIL_FEATURES,
+    _period_partial_ic,
+    _window_bounds,
+    aggregate_window,
+    build_targets,
+    flag_corporate_actions,
+)
+
+FILING_DATES = pd.to_datetime(
+    ["2024-03-31", "2024-06-30", "2024-09-30", "2024-12-31"]
+)
+
+
+def _filings(fii=(1000, 1200, 1100, 1500), total=(10_000,) * 4) -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "symbol": ["ACME"] * 4,
+            "date": FILING_DATES,
+            "fii_shares": list(fii),
+            "dii_shares": [2000, 2100, 2200, 2300],
+            "total_shares": list(total),
+        }
+    )
+
+
+# ── targets ─────────────────────────────────────────────────────────────────
+
+
+def test_accumulation_is_the_share_delta_over_shares_outstanding() -> None:
+    out = build_targets(_filings())
+    # 1200 - 1000 = 200 new shares, over 10,000 outstanding at the start.
+    assert out["accumulation"].iloc[1] == pytest.approx(0.02)
+
+
+def test_first_filing_has_no_target() -> None:
+    """No previous filing means no delta — an inference row, never a training row."""
+    assert pd.isna(build_targets(_filings())["accumulation"].iloc[0])
+
+
+def test_accumulation_uses_share_counts_not_percentages() -> None:
+    """A percentage moves on a buyback with nobody having traded.
+
+    Shares outstanding halve while the FII holding is untouched: the percentage
+    would double, but no accumulation occurred.
+    """
+    out = build_targets(_filings(fii=(1000, 1000, 1000, 1000), total=(10_000, 5_000, 5_000, 5_000)))
+    assert out["accumulation"].iloc[1] == pytest.approx(0.0)
+
+
+def test_targets_difference_consecutive_filings_not_calendar_quarters() -> None:
+    """Filing dates are usually quarter ends but not always."""
+    odd = _filings()
+    odd.loc[2, "date"] = pd.Timestamp("2024-10-29")  # an off-cycle revision
+    out = build_targets(odd)
+    assert out["prev_date"].iloc[3] == pd.Timestamp("2024-10-29")
+    assert out["elapsed_days"].iloc[3] == 63
+
+
+def test_unknown_holder_raises() -> None:
+    with pytest.raises(ValueError, match="no column 'nope_shares'"):
+        build_targets(_filings(), holder="nope")
+
+
+# ── corporate actions ───────────────────────────────────────────────────────
+
+
+def test_a_share_count_jump_is_flagged() -> None:
+    """A bonus issue doubles every holder's count without anybody trading."""
+    split = _filings(total=(10_000, 20_000, 20_000, 20_000))
+    flagged = flag_corporate_actions(build_targets(split))
+    assert bool(flagged.iloc[1])
+
+
+def test_organic_share_drift_is_not_flagged() -> None:
+    """ESOPs and small placements move the count by a percent or two."""
+    drift = _filings(total=(10_000, 10_200, 10_300, 10_400))
+    flagged = flag_corporate_actions(build_targets(drift))
+    assert not flagged.iloc[1:].any()
+
+
+def test_price_adjustment_catches_what_the_share_count_misses() -> None:
+    """total_shares is derived and NULL on ~11% of filings; the price covers those.
+
+    Yahoo adjusts retroactively for splits, so raw/adjusted jumps on the
+    ex-date even when the share count is unavailable.
+    """
+    missing = _filings()
+    missing["total_shares"] = [10_000, None, 10_000, 10_000]
+    targets = build_targets(missing)
+    dates = pd.date_range("2024-04-01", "2024-06-30", freq="D")
+    ratio = np.where(dates < pd.Timestamp("2024-05-15"), 1.0, 2.0)
+    prices = pd.DataFrame(
+        {
+            "symbol": "ACME",
+            "date": dates,
+            "underlying_price": 100.0 * ratio,
+            "underlying_price_adj": 100.0,
+        }
+    )
+    assert bool(flag_corporate_actions(targets, prices).iloc[1])
+
+
+def test_a_dividend_sized_adjustment_is_not_flagged() -> None:
+    """Dividends move raw/adjusted ~1%; splits move it 50%+."""
+    targets = build_targets(_filings())
+    dates = pd.date_range("2024-04-01", "2024-06-30", freq="D")
+    ratio = np.where(dates < pd.Timestamp("2024-05-15"), 1.0, 1.01)
+    prices = pd.DataFrame(
+        {
+            "symbol": "ACME",
+            "date": dates,
+            "underlying_price": 100.0 * ratio,
+            "underlying_price_adj": 100.0,
+        }
+    )
+    assert not flag_corporate_actions(targets, prices).iloc[1:].any()
+
+
+# ── windows ─────────────────────────────────────────────────────────────────
+
+
+def _row(**kw):  # type: ignore[no-untyped-def]
+    from types import SimpleNamespace
+
+    return SimpleNamespace(**kw)
+
+
+def test_early_window_starts_at_the_previous_filing() -> None:
+    """The point of 'early' is firing before the period closes."""
+    row = _row(
+        date=pd.Timestamp("2024-06-30"),
+        prev_date=pd.Timestamp("2024-03-31"),
+        prev_prev_date=pd.Timestamp("2023-12-31"),
+    )
+    start, end = _window_bounds(row, "early")
+    assert start == pd.Timestamp("2024-03-31")
+    assert (end - start).days == EARLY_DAYS
+
+
+def test_lead_window_ends_before_the_period_it_predicts() -> None:
+    """The lead variant must not see any of the period it is scored against."""
+    row = _row(
+        date=pd.Timestamp("2024-06-30"),
+        prev_date=pd.Timestamp("2024-03-31"),
+        prev_prev_date=pd.Timestamp("2023-12-31"),
+    )
+    start, end = _window_bounds(row, "lead")
+    assert end == pd.Timestamp("2024-03-31") <= row.prev_date
+
+
+# ── aggregation ─────────────────────────────────────────────────────────────
+
+
+def _daily(n: int = 60) -> pd.DataFrame:
+    rng = np.random.default_rng(0)
+    return pd.DataFrame(
+        {
+            "q_fut_direction": rng.uniform(-1, 1, n),
+            "opt_direction": rng.uniform(-1, 1, n),
+            "ce_writer_frac": rng.uniform(0, 1, n),
+            "fut_basis_excess": rng.normal(0, 2, n),
+            "oi_outlier_share": rng.uniform(0, 0.2, n),
+            "oi_outlier_count": rng.integers(0, 2, n),
+            "fut_oi_chg_notional": rng.normal(0, 1e7, n),
+            "fut_oi_notional": np.full(n, 1e9),
+            "oi_outlier_build_notional": rng.uniform(0, 1e7, n),
+            "gex": rng.normal(0, 1e9, n),
+            "put_call_oi_ratio": rng.uniform(0.5, 1.5, n),
+            "ret_1d": rng.normal(0, 0.01, n),
+        }
+    )
+
+
+def test_a_short_window_yields_no_features() -> None:
+    assert aggregate_window(_daily(MIN_DAYS_IN_WINDOW - 1)) == {}
+
+
+def test_aggregation_emits_both_feature_families() -> None:
+    out = aggregate_window(_daily())
+    assert set(MEAN_FEATURES) <= set(out)
+    assert set(TAIL_FEATURES) <= set(out)
+
+
+def test_notionals_are_scaled_to_turnover() -> None:
+    """A raw rupee flow ranks by company size — the GEX H1 confound."""
+    small, large = _daily(), _daily()
+    large["fut_oi_chg_notional"] *= 1000.0
+    large["fut_oi_notional"] *= 1000.0
+    assert aggregate_window(small)["fut_oi_chg_turnover"] == pytest.approx(
+        aggregate_window(large)["fut_oi_chg_turnover"]
+    )
+
+
+# ── the partial control ─────────────────────────────────────────────────────
+
+
+def test_partial_ic_annihilates_a_pure_momentum_proxy() -> None:
+    """A feature that is only a restatement of momentum must not survive.
+
+    This is the test the whole stage turns on: FII accumulation tracks price
+    momentum at IC +0.33, so an F&O feature that merely restates price
+    direction would post a large raw IC while adding nothing.
+    """
+    rng = np.random.default_rng(1)
+    n = 600
+    momentum = rng.normal(size=n)
+    frame = pd.DataFrame(
+        {
+            "period": np.repeat(pd.date_range("2022-03-31", periods=6, freq="QE"), 100),
+            "_momentum": momentum,
+            "proxy": momentum + rng.normal(scale=0.05, size=n),
+            "independent": rng.normal(size=n),
+            "accumulation": momentum + rng.normal(scale=0.5, size=n),
+        }
+    )
+    proxy = _period_partial_ic(frame, "proxy", "_momentum").mean()
+    assert abs(proxy) < 0.15
+
+
+def test_partial_ic_preserves_an_independent_signal() -> None:
+    """The other half of the calibration: a real signal must survive the control."""
+    rng = np.random.default_rng(2)
+    n = 600
+    momentum = rng.normal(size=n)
+    extra = rng.normal(size=n)
+    frame = pd.DataFrame(
+        {
+            "period": np.repeat(pd.date_range("2022-03-31", periods=6, freq="QE"), 100),
+            "_momentum": momentum,
+            "extra": extra,
+            "accumulation": momentum + extra + rng.normal(scale=0.3, size=n),
+        }
+    )
+    assert _period_partial_ic(frame, "extra", "_momentum").mean() > 0.5
+
+
+def test_partial_ic_skips_periods_with_too_few_names() -> None:
+    frame = pd.DataFrame(
+        {
+            "period": [pd.Timestamp("2024-03-31")] * 5,
+            "_momentum": range(5),
+            "sig": range(5),
+            "accumulation": range(5),
+        }
+    )
+    assert len(_period_partial_ic(frame, "sig", "_momentum")) == 0
