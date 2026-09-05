@@ -801,6 +801,68 @@ def fetch_deals(
         typer.echo(f"  ! {err}")
 
 
+@app.command(name="fetch-shareholding")
+def fetch_shareholding(
+    limit_symbols: Annotated[
+        int | None,
+        typer.Option("--limit-symbols", min=1, help="Only the first N symbols (smoke runs)."),
+    ] = None,
+    limit_filings: Annotated[
+        int | None,
+        typer.Option("--limit-filings", min=1, help="Only the N most recent filings each."),
+    ] = None,
+    delay: Annotated[
+        float,
+        typer.Option("--delay", min=0.0, help="Seconds between XBRL downloads."),
+    ] = 0.35,
+) -> None:
+    """Fetch SEBI quarterly shareholding patterns into `shareholding`.
+
+    The per-symbol institutional label: FII/DII holdings per symbol per
+    quarter, parsed from the XBRL filings NSE links. Filings are gzip-cached
+    under data/raw/shareholding/, so re-runs and parser fixes are free.
+
+    Share counts are the load-bearing columns — a holding percentage moves on a
+    buyback with nobody having traded, the count does not.
+    """
+    import psycopg2
+
+    from mktmtm.data.shareholding import run_fetch_shareholding
+    from mktmtm.storage.db import build_dsn
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        summary = run_fetch_shareholding(
+            conn, limit_symbols=limit_symbols, limit_filings=limit_filings,
+            delay=delay,
+        )
+    finally:
+        conn.close()
+
+    typer.echo(
+        f"\nshareholding: {summary['rows']:,} filings parsed, "
+        f"{summary['written']:,} written"
+    )
+    typer.echo(
+        f"  {summary['symbols_with_data']}/{summary['symbols_requested']} symbols · "
+        f"median {summary['filings_per_symbol']:.0f} filings each · "
+        f"{summary.get('period') or '—'}"
+    )
+    v = summary.get("validation", {})
+    if v.get("checked"):
+        typer.echo(
+            f"  scale check: institutional exceeds public on "
+            f"{v['institutional_exceeds_public']}/{v['checked']} rows "
+            f"({v['breach_rate']:.1%}) — median institutional "
+            f"{v['median_institutional_pct']:.1f}% vs public "
+            f"{v['median_public_pct']:.1f}%"
+        )
+    if summary.get("error_count"):
+        typer.echo(f"  {summary['error_count']} errors; first few:")
+        for err in summary["errors"][:5]:
+            typer.echo(f"    ! {err}")
+
+
 @app.command(name="test-gex")
 def test_gex(
     limit_symbols: Annotated[

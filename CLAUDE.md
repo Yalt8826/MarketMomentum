@@ -29,6 +29,7 @@ uv run mktmtm fetch-bhavcopy        # NSE F&O bhavcopy → data/raw/bhavcopy/
 uv run mktmtm fetch-yahoo           # daily closes → data/raw/yahoo_finance/
 uv run mktmtm fetch-participant-oi  # NSE participant-wise OI (FII/DII/Pro/Client) → participant_oi
 uv run mktmtm fetch-deals           # NSE bulk/block deals → deals (see the caveats below)
+uv run mktmtm fetch-shareholding    # SEBI quarterly FII/DII holdings → shareholding
 uv run mktmtm preparse-bhavcopy     # parquet cache; re-run after EVERY fetch (speeds etl ~4x)
 uv run mktmtm etl                   # threaded per-symbol ETL → option_metrics
 uv run mktmtm make-dataset          # features + targets → ml_dataset (+ parquet)
@@ -119,6 +120,12 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   premium change: a call premium rises when the underlying rises regardless of who traded. Raw
   and adjusted disagree on 35.8% of contracts (`scripts/measure_delta_adjustment.py`), and the
   aggregate does not reveal it — the writer share barely moves while individual assignments differ.
+- **`shareholding` is the per-symbol institutional label; use SHARE COUNTS, not percentages.**
+  A holding percentage moves on a buyback or an issue with nobody having traded; the count only
+  moves when somebody buys or sells. The XBRL stores percentages as *fractions* (0.1720 = 17.20%),
+  converted on ingest with the scale inferred from the data rather than hard-coded, so a taxonomy
+  change cannot silently multiply every holding by 100. `total_shares` is derived as
+  `shares / pct` across categories and returns NULL when they disagree by more than 1%.
 - **NSE bulk/block deal history cannot be fetched programmatically.** `bulk.csv`/`block.csv` serve
   only the latest trading day, and `/api/historical/*-deals` returns HTTP 503 to any programmatic
   client even with a fully warmed session (it is bot detection — the same report downloads fine
