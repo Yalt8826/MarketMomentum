@@ -795,6 +795,104 @@ def counterparty_check(
 NOWCAST_WINDOW_TOLERANCE = 1.5
 
 
+def transfer_test(
+    conn: Any,
+    *,
+    feature: str = PREREGISTERED_FEATURE,
+    drop_corporate_actions: bool = True,
+) -> dict[str, Any]:
+    """Is the signal reading a foreign-to-domestic *transfer*, or just domestic buying?
+
+    §9.5b established that FII and mutual-fund accumulation oppose each other
+    (−0.48, negative in every quarter). The natural follow-up — "is the signal
+    strongest where they disagree most?" — is **circular as usually posed**:
+    disagreement is defined by the two accumulations, which are the target, so
+    subsetting on it and then measuring an IC against the same target
+    conditions on the outcome.
+
+    Two non-circular substitutes:
+
+    **The spread as a target.** If the basis reflects a transfer of ownership
+    rather than domestic demand alone, it should rank ``mf − fii`` at least as
+    well as it ranks ``mf`` by itself. This conditions on nothing; it simply
+    changes what is being predicted.
+
+    **Prior foreign ownership as a subset.** ``fii_pct`` at the *previous*
+    filing is observable before the window opens and is not a function of the
+    target. Symbols foreigners already own heavily have more scope to sell into
+    domestic buying, so a transfer mechanism should show up more strongly
+    there.
+
+    Both are weaker than the circular test would have been. That is the price
+    of it being valid.
+    """
+    fii = build_accumulation_frame(
+        conn, holder="fii", window="contemporaneous",
+        drop_corporate_actions=drop_corporate_actions,
+    )
+    mf = build_accumulation_frame(
+        conn, holder="mf", window="contemporaneous",
+        drop_corporate_actions=drop_corporate_actions,
+    )
+    joined = mf.merge(
+        fii[["symbol", "date", "accumulation"]],
+        on=["symbol", "date"], suffixes=("", "_fii"),
+    )
+    if joined.empty:
+        return {"error": "no overlapping (symbol, filing) rows"}
+    joined["_momentum"] = joined["_window_return"]
+
+    out: dict[str, Any] = {"feature": feature, "rows": int(len(joined))}
+
+    # ── Target comparison. Same rows, same signal, three targets. ──────────
+    targets = {
+        "mf_only": joined["accumulation"],
+        "fii_only": joined["accumulation_fii"],
+        "spread_mf_minus_fii": joined["accumulation"] - joined["accumulation_fii"],
+    }
+    out["by_target"] = {}
+    for label, series in targets.items():
+        scored = joined.assign(accumulation=series)
+        out["by_target"][label] = _summarize(
+            _period_partial_ic(scored, feature, "_momentum")
+        )
+
+    # ── Subset by prior foreign ownership, which is observable ex ante. ────
+    prior = pd.read_sql(
+        "SELECT symbol, date, fii_pct FROM shareholding", conn
+    )
+    prior["date"] = pd.to_datetime(prior["date"]).astype("datetime64[us]")
+    prior = prior.sort_values(["symbol", "date"], kind="stable")
+    prior["prior_fii_pct"] = prior.groupby(
+        "symbol", observed=True, sort=False
+    )["fii_pct"].shift(1)
+    joined = joined.merge(
+        prior[["symbol", "date", "prior_fii_pct"]], on=["symbol", "date"], how="left"
+    )
+
+    usable = joined.loc[joined["prior_fii_pct"].notna()].copy()
+    if not usable.empty:
+        median = usable.groupby("period", observed=True)[
+            "prior_fii_pct"
+        ].transform("median")
+        out["by_prior_foreign_ownership"] = {
+            "high": _summarize(
+                _period_partial_ic(
+                    usable.loc[usable["prior_fii_pct"] >= median],
+                    feature, "_momentum",
+                )
+            ),
+            "low": _summarize(
+                _period_partial_ic(
+                    usable.loc[usable["prior_fii_pct"] < median],
+                    feature, "_momentum",
+                )
+            ),
+            "median_prior_fii_pct": float(usable["prior_fii_pct"].median()),
+        }
+    return out
+
+
 def nowcast(
     conn: Any,
     *,
@@ -930,13 +1028,33 @@ def _verification_note(as_of: pd.Timestamp) -> dict[str, str]:
     }
 
 
-def write_nowcast_record(result: dict[str, Any], path: Path) -> Path:
+class NowcastRecordExists(RuntimeError):
+    """A prediction record already exists at that path and was not overwritten."""
+
+
+def write_nowcast_record(
+    result: dict[str, Any], path: Path, *, overwrite: bool = False
+) -> Path:
     """Commit the prediction to a markdown record, git-timestamped.
 
     The point of a forward prediction is that it is fixed *before* the outcome
-    is known. `models/` is gitignored, so an artifact there proves nothing
+    is known. ``models/`` is gitignored, so an artifact there proves nothing
     about when it was written; a committed file does.
+
+    **Refuses to overwrite an existing record.** A record whose immutability
+    depends on nobody re-running the command with the same ``--out`` is not
+    frozen — and the failure would be silent, replacing a prediction made
+    before the outcome with one made after it, under the original filename and
+    the original claim. Pass ``overwrite=True`` only to correct a record on the
+    same day it was written.
     """
+    if path.exists() and not overwrite:
+        raise NowcastRecordExists(
+            f"{path} already exists. A prediction record is meant to be frozen: "
+            f"overwriting it would silently replace a forecast with hindsight. "
+            f"Write to a new dated path, or pass --overwrite to correct a "
+            f"record made today."
+        )
     frame: pd.DataFrame = result["ranking"]
     cal = result["calibration"]
     v = result["verification"]

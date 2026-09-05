@@ -999,6 +999,13 @@ def nowcast_cmd(
         Path | None,
         typer.Option("--out", help="Write a committed markdown record here."),
     ] = None,
+    overwrite: Annotated[
+        bool,
+        typer.Option(
+            "--overwrite",
+            help="Replace an existing record. Only for correcting one made today.",
+        ),
+    ] = False,
 ) -> None:
     """Rank symbols by accumulation in the quarter SEBI has not disclosed yet.
 
@@ -1052,9 +1059,16 @@ def nowcast_cmd(
         )
 
     if out is not None:
-        from mktmtm.ml.accumulation import write_nowcast_record
+        from mktmtm.ml.accumulation import (
+            NowcastRecordExists,
+            write_nowcast_record,
+        )
 
-        path = write_nowcast_record(result, out)
+        try:
+            path = write_nowcast_record(result, out, overwrite=overwrite)
+        except NowcastRecordExists as exc:
+            typer.echo(f"\n  refused: {exc}")
+            raise typer.Exit(1) from exc
         typer.echo(f"\n  record written to {path}")
 
 

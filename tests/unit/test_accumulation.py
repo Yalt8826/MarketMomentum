@@ -441,3 +441,37 @@ def test_stale_filings_are_excluded_from_the_nowcast() -> None:
     median = float(windows.median())
     stale = windows > median * NOWCAST_WINDOW_TOLERANCE
     assert stale.tolist() == [False, False, False, False, True]
+
+
+def test_a_prediction_record_is_not_silently_overwritten(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A record whose immutability relies on nobody re-running the command is not frozen.
+
+    Overwriting would replace a forecast made before the outcome with one made
+    after it — under the original filename, and the original claim.
+    """
+    from mktmtm.ml.accumulation import NowcastRecordExists, write_nowcast_record
+
+    result = {
+        "as_of": "2026-08-28", "holder": "mf", "feature": "basis_excess_mean",
+        "symbols": 2, "dropped_stale_filing": 0, "median_window_days": 59,
+        "calibration": {"mean_ic": 0.11, "positive_rate": 0.89, "periods": 19},
+        "verification": {
+            "open_quarter_ends": "2026-09-30", "filing_expected": "2026-11-14",
+            "how": "re-run",
+        },
+        "ranking": pd.DataFrame(
+            {
+                "rank": [1, 2], "symbol": ["AAA", "BBB"], "score": [1.0, -1.0],
+                "signal_raw": [2.0, -2.0], "window_return": [0.1, -0.1],
+            }
+        ),
+    }
+    path = tmp_path / "nowcast-2026-08-28.md"
+    write_nowcast_record(result, path)
+    assert path.exists()
+
+    with pytest.raises(NowcastRecordExists, match="frozen"):
+        write_nowcast_record(result, path)
+
+    # Correcting a record made the same day stays possible, explicitly.
+    write_nowcast_record(result, path, overwrite=True)

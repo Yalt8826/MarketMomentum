@@ -350,6 +350,54 @@ near-tautological because the labels were already −0.80 correlated by
 construction. Here the two series are independently filed by different holders
 and nothing forces them to oppose.
 
+### 9.5b-ii The signal reads domestic buying, not a transfer
+
+§9.5b showed FII and mutual-fund accumulation oppose each other (−0.48,
+negative in every quarter). The obvious follow-up — *is the signal strongest
+where they disagree most?* — is **circular as usually posed**: disagreement is
+defined by the two accumulations, which are the target, so subsetting on it and
+then measuring an IC against that same target conditions on the outcome. Two
+non-circular substitutes were run instead.
+
+**The spread as a target** conditions on nothing; it just changes what is
+predicted. If the basis reflects ownership *transferring* from foreign to
+domestic hands, it should rank `mf − fii` at least as well as `mf` alone:
+
+| Target | Partial IC | Positive |
+|---|---|---|
+| **`mf` alone** | **+0.1374** | 95% of 19 |
+| `fii` alone | −0.0538 | 11% |
+| `mf − fii` (the transfer) | +0.1030 | 95% |
+
+**It does not.** The spread is *weaker* than domestic accumulation alone
+(+0.103 vs +0.137), even though the FII leg carries the opposite sign and
+subtracting it should naively have helped. That means the foreign leg
+contributes more variance than signal: **the basis is reading the domestic
+side, not the handoff.**
+
+**Prior foreign ownership as a subset** — `fii_pct` at the *previous* filing,
+observable before the window opens and not a function of the target. Symbols
+foreigners already own heavily have more scope to sell into domestic buying:
+
+| Subset (median prior `fii_pct` 17.2%) | Partial IC | Positive |
+|---|---|---|
+| High prior foreign ownership | +0.1659 | 84% of 19 |
+| Low | +0.1230 | 84% of 19 |
+
+Higher where foreigners own more, but modestly and with an identical hit rate.
+Weakly consistent with a transfer, not evidence for one.
+
+**Conclusion: the mechanism is simpler than §9.5b suggested.** Mutual-fund
+accumulation creates financing demand and that shows in the basis. Foreign
+investors are on the other side — the −0.48 opposition is real — but the signal
+detects the domestic leg directly rather than reading the exchange between
+them. Both non-circular tests point the same way, and the earlier framing
+should be read as corroborating the *economics* rather than describing what the
+feature measures.
+
+⚠️ Both substitutes are weaker tests than the circular version would have been.
+That is the price of the circular version being invalid.
+
 ### 9.5c The time gradient tracks flow, not the calendar — probably
 
 The effect nearly triples between halves (+0.070 → +0.198), which needed

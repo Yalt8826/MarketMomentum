@@ -147,6 +147,13 @@ The record states its own limits on its face: the calibrated IC, that this is a
 claim about *ordering across the universe* rather than about any name in it,
 and the exact commands to score it.
 
+**The record is immutable by default.** `write_nowcast_record` raises
+`NowcastRecordExists` rather than overwriting. A record whose immutability
+depends on nobody re-running the command with the same `--out` is not frozen,
+and the failure would be silent: a forecast made before the outcome replaced by
+one made after it, under the original filename and the original claim.
+`--overwrite` exists only to correct a record on the day it was written.
+
 ---
 
 ## 4. Results — the 2026-08-28 run
