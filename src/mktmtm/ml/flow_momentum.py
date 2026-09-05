@@ -52,6 +52,7 @@ import pandas as pd
 
 from mktmtm.ml.market_metrics import block_bootstrap_mean_ci
 from mktmtm.ml.metrics import daily_rank_ic, icir
+from mktmtm.progress import progress_stage
 
 logger = logging.getLogger(__name__)
 
@@ -266,19 +267,27 @@ def momentum_table(
     rng = np.random.default_rng(seed)
     work = frame.copy()
 
-    for target in targets:
-        cells: dict[str, Any] = {}
-        for signal in signals:
-            if signal not in work.columns:
-                continue
-            cells[signal] = {
+    pairs = [
+        (target, signal)
+        for target in targets
+        for signal in signals
+        if signal in work.columns
+    ]
+    with progress_stage(
+        "Scoring momentum grid", total=len(pairs), unit="cells"
+    ) as bar:
+        for target in targets:
+            out["grid"][target] = {}
+        for target, signal in pairs:
+            bar.set_label(f"{signal} → {target}")
+            out["grid"][target][signal] = {
                 str(h): _ic_summary(
                     work, signal, f"fwd_{target}_{h}", horizon=h, seed=seed
                 )
                 for h in horizons
             }
             out["n_tests"] += len(horizons)
-        out["grid"][target] = cells
+            bar.advance()
 
     # ── Diagnostic 1: contemporaneous IC ───────────────────────────────────
     # Several signals share construction components with `opt_direction`
@@ -312,17 +321,19 @@ def momentum_table(
     # cross-section. ``consistency`` is the share of symbols agreeing with the
     # mean's sign — the number that separates a broad effect from a few
     # outliers dragging an average.
-    out["within_symbol_leadlag"] = {
-        target: {
-            signal: {
+    out["within_symbol_leadlag"] = {}
+    with progress_stage(
+        "Within-symbol lead-lag", total=len(pairs), unit="pairs"
+    ) as bar:
+        for target in targets:
+            out["within_symbol_leadlag"][target] = {}
+        for target, signal in pairs:
+            bar.set_label(f"{signal} → {target}")
+            out["within_symbol_leadlag"][target][signal] = {
                 str(lag): _lead_lag(work, signal, target, lag)
                 for lag in (0, *horizons)
             }
-            for signal in signals
-            if signal in work.columns
-        }
-        for target in targets
-    }
+            bar.advance()
 
     primary = targets[0]
 

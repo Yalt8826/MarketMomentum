@@ -55,6 +55,8 @@ from typing import Any, Literal
 import numpy as np
 import pandas as pd
 
+from mktmtm.progress import progress_stage
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -462,9 +464,14 @@ def evaluate_accumulation(
     work = frame.copy()
     results: dict[str, Any] = {"features": {}, "baselines": {}}
 
-    for name in features:
-        if name in work.columns:
+    present = [name for name in features if name in work.columns]
+    with progress_stage(
+        "Scoring features", total=len(present), unit="features"
+    ) as bar:
+        for name in present:
+            bar.set_label(name)
             results["features"][name] = _summarize(_period_ic(work, name))
+            bar.advance()
 
     rng = np.random.default_rng(seed)
     # Price momentum is this stage's calendar baseline: institutions buy what
@@ -488,11 +495,16 @@ def evaluate_accumulation(
         results["baselines"][label] = _summarize(_period_ic(work, column))
 
     # The decisive table: does anything survive with momentum partialled out?
-    results["partial_vs_momentum"] = {
-        name: _summarize(_period_partial_ic(work, name, "_momentum"))
-        for name in features
-        if name in work.columns
-    }
+    results["partial_vs_momentum"] = {}
+    with progress_stage(
+        "Partialling out momentum", total=len(present), unit="features"
+    ) as bar:
+        for name in present:
+            bar.set_label(name)
+            results["partial_vs_momentum"][name] = _summarize(
+                _period_partial_ic(work, name, "_momentum")
+            )
+            bar.advance()
     # Momentum controlled by the best raw feature, for symmetry: if each
     # annihilates the other they are the same signal, if momentum survives and
     # the feature does not then the feature was only ever a momentum proxy.
@@ -533,8 +545,12 @@ def run_accumulation(
     summary: dict[str, Any] = {}
     exported = False
 
-    for holder in holders:
-        for window in windows:
+    combinations = [(h, w) for h in holders for w in windows]
+    with progress_stage(
+        "Accumulation detection", total=len(combinations), unit="cells"
+    ) as outer:
+        for holder, window in combinations:
+            outer.set_label(f"{holder}:{window}")
             key = f"{holder}:{window}"
             try:
                 frame = build_accumulation_frame(
@@ -543,6 +559,7 @@ def run_accumulation(
                 )
             except ValueError as exc:
                 summary[key] = {"error": str(exc)}
+                outer.advance()
                 continue
             summary[key] = evaluate_accumulation(frame)
             summary[key]["_meta"] = {
@@ -555,6 +572,7 @@ def run_accumulation(
                 DEFAULT_PARQUET.parent.mkdir(parents=True, exist_ok=True)
                 frame.to_parquet(DEFAULT_PARQUET, index=False)
                 exported = True
+            outer.advance()
 
     # The robustness battery runs on the pre-registered feature only, against
     # the holder the effect was localised to. Nothing here searches.

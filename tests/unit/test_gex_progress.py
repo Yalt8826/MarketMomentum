@@ -13,6 +13,7 @@ rendering works, and separately assert the ``MKTMTM_NO_PROGRESS=1`` log path.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 
 import pytest
@@ -210,3 +211,47 @@ def test_gex_pipeline_cli_forwards_flags_and_skip(monkeypatch) -> None:
     assert captured["limit_dates"] == 10
     assert captured["run_model"] is False
     assert captured["skip"] == {"preparse", "etl"}
+
+
+def test_nested_progress_bars_do_not_take_the_live_display_twice() -> None:
+    """Rich allows one Live display; a nested bar must degrade, not raise.
+
+    Depending on the installed rich version tolerating a second Live would put
+    a LiveError in the middle of a multi-hour pipeline. The outermost bar owns
+    the display and inner bars log instead, so their progress is still kept.
+    """
+    import mktmtm.progress as progress_mod
+    from mktmtm.progress import progress_stage
+
+    original = progress_mod.use_rich
+    progress_mod.use_rich = lambda: True  # type: ignore[assignment]
+    try:
+        with progress_stage("outer", total=2) as outer:
+            with progress_stage("inner", total=2) as inner:
+                # The inner handle must still work, just without a live bar.
+                assert type(inner).__name__ == "_LoggingBar"
+                inner.advance()
+            assert type(outer).__name__ == "_RichBar"
+            outer.advance()
+        # Depth unwinds, so the next top-level bar takes the display again.
+        with progress_stage("after", total=1) as after:
+            assert type(after).__name__ == "_RichBar"
+            after.advance()
+    finally:
+        progress_mod.use_rich = original  # type: ignore[assignment]
+
+
+def test_nesting_depth_unwinds_on_an_exception() -> None:
+    """A stage that raises must not leave the depth counter stuck above zero."""
+    import mktmtm.progress as progress_mod
+    from mktmtm.progress import progress_stage
+
+    original = progress_mod.use_rich
+    progress_mod.use_rich = lambda: True  # type: ignore[assignment]
+    try:
+        with contextlib.suppress(RuntimeError), progress_stage("outer", total=1):
+            raise RuntimeError("stage blew up")
+        with progress_stage("after", total=1) as after:
+            assert type(after).__name__ == "_RichBar"
+    finally:
+        progress_mod.use_rich = original  # type: ignore[assignment]

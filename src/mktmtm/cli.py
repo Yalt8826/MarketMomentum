@@ -1072,6 +1072,54 @@ def nowcast_cmd(
         typer.echo(f"\n  record written to {path}")
 
 
+@app.command(name="run-pipeline")
+def run_pipeline_cmd(
+    mode: Annotated[
+        str,
+        typer.Option(
+            "--mode",
+            help="all | no-etl (skip fetch+ETL) | models (modelling stages only).",
+        ),
+    ] = "all",
+    only: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--only",
+            help="Run only stages whose name contains this; repeatable. "
+            "Use it to resume after a failure without repeating upstream work.",
+        ),
+    ] = None,
+) -> None:
+    """Run the whole pipeline in dependency order, timed, stopping at the first failure.
+
+    Each stage renders its own progress bar. Set MKTMTM_NO_PROGRESS=1 (automatic
+    when stderr is not a TTY) for log lines instead, which is what you want when
+    redirecting an overnight run to a file.
+
+    See docs/runbook.md for measured timings and how to resume from a failure.
+    """
+    from mktmtm.pipeline_runner import run_pipeline
+
+    try:
+        results = run_pipeline(mode=mode, only=only)  # type: ignore[arg-type]
+    except ValueError as exc:
+        typer.echo(f"{exc}")
+        raise typer.Exit(2) from exc
+
+    typer.echo("")
+    width = max((len(r.name) for r in results), default=10)
+    for r in results:
+        mark = "ok  " if r.ok else "FAIL"
+        typer.echo(f"  {mark}  {r.name:<{width}}  {r.seconds:>8.0f}s")
+    total = sum(r.seconds for r in results)
+    typer.echo(f"\n  total {total:.0f}s ({total / 60:.0f}m) over {len(results)} stages")
+
+    failed = [r for r in results if not r.ok]
+    if failed:
+        typer.echo(f"\n  stopped at: {failed[0].name}\n  {failed[0].error}")
+        raise typer.Exit(1)
+
+
 @app.command(name="test-gex")
 def test_gex(
     limit_symbols: Annotated[

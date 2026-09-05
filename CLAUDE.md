@@ -22,8 +22,9 @@ psql "$PG_DSN" -f src/mktmtm/storage/sql/init_db.sql   # runs all DDLs in depend
 uv run python scripts/verify_db_health.py              # health gate; exits 1 on structural flaws
 ```
 
-**To run everything: `./scripts/run_pipeline.sh`** (or `--no-etl` / `--models`).
-Timed, logged to `logs/`, stops at the first failure. See `docs/runbook.md`.
+**To run everything: `uv run mktmtm run-pipeline`** (`--mode no-etl` / `--mode models`,
+or `--only <stage>` to resume). Timed, progress-barred, stops at the first failure.
+See `docs/runbook.md`.
 
 Full pipeline order (ML training path):
 

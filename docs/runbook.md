@@ -1,17 +1,28 @@
 # Runbook — running the pipeline end to end
 
 ```bash
-./scripts/run_pipeline.sh              # everything, including the 3-5h ETL
-./scripts/run_pipeline.sh --no-etl     # skip fetch + ETL, rebuild derived tables
-./scripts/run_pipeline.sh --models     # modelling stages only
+uv run mktmtm run-pipeline                       # everything, incl. the 3-5h ETL
+uv run mktmtm run-pipeline --mode no-etl         # rebuild derived tables only
+uv run mktmtm run-pipeline --mode models         # modelling stages only
+uv run mktmtm run-pipeline --only "flow features" --only accumulation
 ```
 
-Every stage is timed and logged to `logs/pipeline-<timestamp>.log`. The run
-**stops at the first failure** rather than carrying a broken table forward into
-six hours of downstream work.
+Every stage is timed, stops the run on failure, and renders **its own progress
+bar**. A summary table of per-stage timings prints at the end.
 
-`PG_DSN` must be set. `MKTMTM_NO_PROGRESS=1` is exported by the script, so the
-log holds readable lines rather than rich progress bars.
+`--only` matches on substrings of stage names and is how you resume after a
+failure without repeating hours of upstream work.
+
+**For an overnight run, redirect to a file:**
+
+```bash
+uv run mktmtm run-pipeline > logs/tonight.log 2>&1 &
+tail -f logs/tonight.log
+```
+
+Progress automatically becomes log lines rather than rich bars when stderr is
+not a TTY, so a redirected log stays readable. `MKTMTM_NO_PROGRESS=1` forces
+that behaviour explicitly.
 
 ---
 
@@ -21,7 +32,7 @@ Measured on this machine, five years of data.
 
 | # | Stage | Command | Time | Notes |
 |---|---|---|---|---|
-| 0 | Schema | `psql -f init_db.sql` | <1s | Idempotent, 10 DDLs |
+| 0 | Schema | `init_db.sql` | <1s | Idempotent, 10 DDLs |
 | 1 | Bhavcopy | `fetch-bhavcopy` | mins | Incremental |
 | 2 | Yahoo spot | `fetch-yahoo` | mins | |
 | 3 | Participant OI | `fetch-participant-oi` | mins | |
@@ -90,9 +101,8 @@ because every evaluation depends on that 1:1 join.
 The log names the stage. Re-run from there rather than from the top:
 
 ```bash
-tail -50 logs/pipeline-<timestamp>.log
-uv run mktmtm <failed-stage>              # re-run one stage
-./scripts/run_pipeline.sh --models        # then resume from modelling
+uv run mktmtm run-pipeline --only "<failed stage>"   # re-run just that stage
+uv run mktmtm run-pipeline --mode models            # then resume from modelling
 ```
 
 Most stages are idempotent UPSERTs, so re-running one is safe. The two
@@ -114,7 +124,7 @@ accumulation for the quarter ending **2026-09-30**, checkable once the filing
 publishes around **2026-11-14**.
 
 ```bash
-./scripts/run_pipeline.sh                              # catch data up first
+uv run mktmtm run-pipeline                             # catch data up first
 uv run mktmtm accumulation --holder mf --window contemporaneous
 ```
 

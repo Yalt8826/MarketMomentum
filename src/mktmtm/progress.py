@@ -41,6 +41,26 @@ __all__ = ["progress_stage", "track", "use_rich"]
 # Emit at most one log line per this many seconds in non-TTY mode.
 _LOG_INTERVAL_SECONDS = 15.0
 
+# Rich renders through a Live display and only one may be active at a time, so
+# a nested `progress_stage` cannot have its own bar. Rather than depend on
+# whichever rich version happens to be installed tolerating it — today's does,
+# by silently not rendering the inner bar; a future one may raise LiveError and
+# take down a six-hour pipeline — nesting is handled explicitly: the outer bar
+# owns the display and inner bars degrade to log lines, so their progress is
+# still recorded.
+_depth = threading.local()
+
+
+def _enter_nesting() -> bool:
+    """Increment the nesting depth; return True if this is the outermost bar."""
+    current = getattr(_depth, "value", 0)
+    _depth.value = current + 1
+    return current == 0
+
+
+def _exit_nesting() -> None:
+    _depth.value = max(0, getattr(_depth, "value", 1) - 1)
+
 
 class _Bar(Protocol):
     def advance(self, n: int = 1, label: str | None = None) -> None: ...
@@ -156,15 +176,28 @@ def progress_stage(
 
     Yields a handle with ``advance(n=1, label=...)`` and ``set_label(...)``.
     Safe to call from multiple threads.
-    """
-    if not use_rich():
-        bar = _LoggingBar(description, total, unit)
-        try:
-            yield bar
-        finally:
-            bar.finish()
-        return
 
+    **Nests safely.** Only the outermost bar takes the live display; inner ones
+    fall back to log lines, so their progress is still recorded and no rich
+    version can raise ``LiveError`` in the middle of a long pipeline.
+    """
+    outermost = _enter_nesting()
+    try:
+        # A nested bar always logs: the outer one owns the live display.
+        if not outermost or not use_rich():
+            bar = _LoggingBar(description, total, unit)
+            try:
+                yield bar
+            finally:
+                bar.finish()
+            return
+        yield from _rich_stage(description, total)
+    finally:
+        _exit_nesting()
+
+
+def _rich_stage(description: str, total: int | None) -> Iterator[_Bar]:
+    """The live-display implementation. Plain generator: delegated to, not entered."""
     from rich.progress import (
         BarColumn,
         MofNCompleteColumn,

@@ -46,6 +46,7 @@ import numpy as np
 import pandas as pd
 
 from mktmtm.ml.splits import walk_forward_splits
+from mktmtm.progress import progress_stage
 
 logger = logging.getLogger(__name__)
 
@@ -460,48 +461,55 @@ def run_flow_attribution(
     summary: dict[str, Any] = {}
     attributions: list[pd.DataFrame] = []
 
-    for participant in participants:
-        labels = (
-            nets.loc[nets["client_type"] == participant]
-            .set_index("date")[column]
-            .astype("float64")
-        )
-        try:
-            fit = fit_linear_attribution(bag_features, labels, seed=seed)
-        except ValueError as exc:
-            summary[participant] = {"error": str(exc)}
-            continue
+    bar_ctx = progress_stage(
+        "Attributing flow", total=len(participants), unit="participants"
+    )
+    with bar_ctx as bar:
+        for participant in participants:
+            bar.set_label(participant)
+            labels = (
+                nets.loc[nets["client_type"] == participant]
+                .set_index("date")[column]
+                .astype("float64")
+            )
+            try:
+                fit = fit_linear_attribution(bag_features, labels, seed=seed)
+            except ValueError as exc:
+                summary[participant] = {"error": str(exc)}
+                bar.advance()
+                continue
 
-        scores = _scores_from(fit["model"], panel, features)
-        reconstructed = bag_aggregate(scores, weights, panel["date"])
-        aligned = pd.DataFrame({"pred": reconstructed}).join(
-            labels.rename("y"), how="inner"
-        ).dropna()
-        ss_res = float(((aligned["y"] - aligned["pred"]) ** 2).sum())
-        ss_tot = float(((aligned["y"] - aligned["y"].mean()) ** 2).sum())
+            scores = _scores_from(fit["model"], panel, features)
+            reconstructed = bag_aggregate(scores, weights, panel["date"])
+            aligned = pd.DataFrame({"pred": reconstructed}).join(
+                labels.rename("y"), how="inner"
+            ).dropna()
+            ss_res = float(((aligned["y"] - aligned["pred"]) ** 2).sum())
+            ss_tot = float(((aligned["y"] - aligned["y"].mean()) ** 2).sum())
 
-        summary[participant] = {
-            "alpha": fit["alpha"],
-            "bags": fit["bags"],
-            "oos_r2_walk_forward": fit["oos_r2"],
-            "oos_r2_by_alpha": fit["oos_r2_by_alpha"],
-            "in_sample_reconstruction_r2": (
-                1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
-            ),
-            "coefficients": fit["coefficients"],
-            "earnings": earnings_corroboration(panel, scores),
-            "stability_lag1_autocorr": score_stability(panel, scores),
-            "placebo": placebo_test(bag_features, labels, panel, features, seed=seed),
-            "identifiability": identifiability_check(
-                bag_features, labels, panel, features, seed=seed
-            ),
-        }
-        attributions.append(
-            panel[["symbol", "date"]]
-            .assign(participant=participant, flow_score=scores.to_numpy(),
-                    weight=weights.to_numpy())
-            .dropna(subset=["flow_score"])
-        )
+            summary[participant] = {
+                "alpha": fit["alpha"],
+                "bags": fit["bags"],
+                "oos_r2_walk_forward": fit["oos_r2"],
+                "oos_r2_by_alpha": fit["oos_r2_by_alpha"],
+                "in_sample_reconstruction_r2": (
+                    1.0 - ss_res / ss_tot if ss_tot > 0 else 0.0
+                ),
+                "coefficients": fit["coefficients"],
+                "earnings": earnings_corroboration(panel, scores),
+                "stability_lag1_autocorr": score_stability(panel, scores),
+                "placebo": placebo_test(bag_features, labels, panel, features, seed=seed),
+                "identifiability": identifiability_check(
+                    bag_features, labels, panel, features, seed=seed
+                ),
+            }
+            attributions.append(
+                panel[["symbol", "date"]]
+                .assign(participant=participant, flow_score=scores.to_numpy(),
+                        weight=weights.to_numpy())
+                .dropna(subset=["flow_score"])
+            )
+            bar.advance()
 
     if attributions:
         combined = pd.concat(attributions, ignore_index=True)

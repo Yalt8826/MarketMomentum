@@ -48,6 +48,7 @@ from mktmtm.ml.market_metrics import (
     summarize_market,
 )
 from mktmtm.ml.splits import walk_forward_splits
+from mktmtm.progress import progress_stage
 
 logger = logging.getLogger(__name__)
 
@@ -571,23 +572,33 @@ def evaluate_participant(
     ].reset_index(drop=True)
     dropped = int(len(frame) - len(common))
 
-    for set_name, features in _feature_sets().items():
-        for model in models:
-            if set_name == "calendar_only" and model != "ridge":
-                continue  # the calendar baseline is a control, not a horse race
+    combinations = [
+        (set_name, features, model)
+        for set_name, features in _feature_sets().items()
+        for model in models
+        # The calendar baseline is a control, not a horse race entrant.
+        if not (set_name == "calendar_only" and model != "ridge")
+    ]
+    with progress_stage(
+        f"Fitting {participant} flow models", total=len(combinations), unit="fits"
+    ) as bar:
+        for set_name, features, model in combinations:
             key = f"{set_name}:{model}"
+            bar.set_label(key)
             try:
                 scored = walk_forward_market(
                     common, features, model=model, seed=seed
                 )
             except ValueError as exc:
                 results[key] = {"error": str(exc)}
+                bar.advance()
                 continue
             predictions[key] = scored
             results[key] = summarize_market(
                 scored, score_col="pred", label_col="y",
                 magnitude_col="y_magnitude",
             )
+            bar.advance()
 
     reference = predictions.get("calendar_only:ridge")
     if reference is not None:
@@ -650,6 +661,7 @@ def run_market_flow(
     best_preds: dict[str, pd.DataFrame] = {}
 
     for participant in participants:
+        logger.info("building market frame for %s", participant)
         frame = build_market_frame(conn, participant=participant, column=column)
         if parquet and participant == participants[0]:
             DEFAULT_PARQUET.parent.mkdir(parents=True, exist_ok=True)
