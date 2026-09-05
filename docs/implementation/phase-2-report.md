@@ -409,6 +409,14 @@ clear of zero and foreign investors demonstrably on the other side.
 **And one robust negative:** foreign institutional accumulation is explained by
 price momentum, and nothing in the F&O book tested here adds to it.
 
+### The detector runs forward
+
+`mktmtm nowcast` ranks symbols by accumulation in the quarter SEBI has not yet
+disclosed — a prediction that can be scored later and can fail. First run
+2026-08-28: 177 symbols, 59-day window, calibrated IC **+0.1145**, checkable
+from **~2026-11-14**. Record: [`../results/nowcast-2026-08-28.md`](../results/nowcast-2026-08-28.md).
+Implementation: [`nowcast.md`](nowcast.md).
+
 ### Open, in priority order
 
 1. **Test whether detection sharpens where FII and MF disagree most.** §6

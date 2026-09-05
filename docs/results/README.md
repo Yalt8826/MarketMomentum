@@ -492,8 +492,15 @@ strength appears to scale with how much flow there is to detect, rather than
 being specific to 2024–26. But at 19 periods that partial gives p = 0.13: the
 best available explanation, not an established one.
 
+**The detector runs forward.** `mktmtm nowcast` ranks symbols for the quarter
+SEBI has not yet disclosed. First run 2026-08-28: 177 symbols, 59-day window,
+calibrated IC +0.1145, **checkable from ~2026-11-14** — a prediction fixed
+before the outcome exists, and one that can fail. Record:
+[`nowcast-2026-08-28.md`](nowcast-2026-08-28.md).
+
 Design, traps and full results:
-[`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md).
+[`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md);
+nowcast implementation: [`nowcast.md`](../implementation/nowcast.md).
 
 ---
 

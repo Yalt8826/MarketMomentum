@@ -186,6 +186,9 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+`docs/implementation/nowcast.md` (the detector run forward against an undisclosed quarter:
+window calibration, momentum residualisation, and why the prediction record is committed
+rather than left in gitignored `models/`),
 `docs/implementation/phase-2-report.md` (implementation + results narrative for the reframe to
 detection, the shareholding and deals pipelines, Stages 4-5, and the two silent data defects),
 `docs/implementation/deals-label.md` (the per-symbol institutional label: why every stage so far
