@@ -262,3 +262,73 @@ def test_partial_ic_skips_periods_with_too_few_names() -> None:
         }
     )
     assert len(_period_partial_ic(frame, "sig", "_momentum")) == 0
+
+
+def _robustness_frame(effect: float, n_periods: int = 12, n_symbols: int = 80):
+    """A panel where `basis_excess_mean` genuinely drives accumulation."""
+    rng = np.random.default_rng(7)
+    rows = []
+    for p_i, period in enumerate(pd.date_range("2022-03-31", periods=n_periods, freq="QE")):
+        for s_i in range(n_symbols):
+            basis = rng.normal()
+            rows.append(
+                {
+                    "symbol": f"S{s_i:03d}",
+                    "date": period,
+                    "period": period,
+                    "basis_excess_mean": basis,
+                    "_window_return": rng.normal(),
+                    "_oi_notional": float(10 ** (7 + (s_i % 3))),
+                    "accumulation": effect * basis + rng.normal(scale=1.0),
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def test_robustness_splits_report_both_halves() -> None:
+    from mktmtm.ml.accumulation import robustness_checks
+
+    out = robustness_checks(_robustness_frame(effect=1.0), n_boot=200)
+    for key in ("full_sample", "first_half", "second_half", "large_caps", "small_caps"):
+        assert out[key]["mean_ic"] > 0.2, key
+    assert out["first_half"]["period_range"] < out["second_half"]["period_range"]
+
+
+def test_bootstrap_ci_excludes_zero_only_for_a_real_effect() -> None:
+    """The calibration pair: a real effect clears zero, pure noise does not."""
+    from mktmtm.ml.accumulation import robustness_checks
+
+    real = robustness_checks(_robustness_frame(effect=1.0), n_boot=500)
+    noise = robustness_checks(_robustness_frame(effect=0.0), n_boot=500)
+    assert real["bootstrap"]["excludes_zero"]
+    assert not noise["bootstrap"]["excludes_zero"]
+
+
+def test_bootstrap_resamples_periods_not_rows() -> None:
+    """Rows within a quarter share that quarter's market entirely.
+
+    Resampling them as independent draws would treat ~150 symbols as 150
+    observations and produce an interval far too tight.
+    """
+    from mktmtm.ml.accumulation import robustness_checks
+
+    out = robustness_checks(_robustness_frame(effect=1.0, n_periods=12), n_boot=300)
+    assert out["bootstrap"]["periods"] == 12
+
+
+def test_size_split_is_within_period() -> None:
+    """Splitting on a global median would confound size with time.
+
+    Open interest grows across the sample, so a global threshold would put
+    early quarters in 'small' and late ones in 'large'.
+    """
+    from mktmtm.ml.accumulation import robustness_checks
+
+    frame = _robustness_frame(effect=1.0)
+    # Inflate later periods so a global split would be a time split.
+    late = frame["period"] > frame["period"].median()
+    frame.loc[late, "_oi_notional"] *= 100.0
+    out = robustness_checks(frame, n_boot=200)
+    # Both halves of the universe must still see most periods.
+    assert out["large_caps"]["periods"] >= 10
+    assert out["small_caps"]["periods"] >= 10

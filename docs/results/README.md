@@ -450,10 +450,35 @@ fallback it inflated DII by the same amount. Both targets were wrong and
 nothing failed. Fixed by preferring the first non-zero alias; holdings are now
 smooth across the boundary.
 
+**It survives every split tried.** With the feature pre-registered before any
+subset was examined:
+
+| Subset | Partial IC | Positive |
+|---|---|---|
+| Full sample | +0.1374 | 95% of 19 |
+| First half (2021-10 → 2023-10) | +0.0701 | 89% of 9 |
+| **Second half (2024-01 → 2026-04)** | **+0.1981** | **100% of 10** |
+| Large caps | +0.1665 | 79% |
+| Small caps | +0.1055 | 79% |
+
+Bootstrap over *periods* (not rows — ~150 symbols in a quarter share that
+quarter's market): **+0.1374, 95% CI [+0.0902, +0.1801], excludes zero.**
+
+**The counterparty structure is confirmed independently.** FII and mutual-fund
+accumulation correlate at **−0.4807, negative in 100% of 19 quarters**. Foreign
+investors and domestic funds are systematically on opposite sides of the same
+stocks. Unlike Stage 1's Pro/Client check — which proved near-tautological
+because the labels were already −0.80 correlated by construction — these two
+series are filed independently by different holders, and nothing forces them to
+oppose.
+
 **Limits:** the effect is modest (consistency, not size, makes it credible); 19
-periods is few; ~120 cells were examined; the holder split was not
-pre-registered; and 2021–2026 was a period of unprecedented Indian retail
-inflow growth, so the contrarian DII behaviour may be regime-specific.
+periods is few; ~120 cells were examined and the original feature selection was
+not pre-registered; there is **no true out-of-sample test** (subset stability is
+weaker than an independent dataset, and monthly MF portfolios were not
+attempted — ~40 heterogeneous AMC scrapes); and the effect nearly triples
+between the first and second halves, so it may be strengthening with the
+2024–26 domestic-inflow surge rather than being a stable constant.
 
 Design, traps and full results:
 [`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md).

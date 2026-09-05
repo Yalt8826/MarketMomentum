@@ -961,6 +961,31 @@ def _print_accumulation(summary: dict[str, Any]) -> None:
                 f"{reverse.get('mean_ic', float('nan')):+.4f}"
             )
 
+    rob = summary.get("_robustness")
+    if rob and "error" not in rob:
+        typer.echo(f"\n── robustness: {rob['feature']} → mutual-fund accumulation ──")
+        for label in ("full_sample", "first_half", "second_half", "large_caps", "small_caps"):
+            cell = rob.get(label, {})
+            typer.echo(
+                f"   {label:<16}{cell.get('mean_ic', float('nan')):+9.4f}"
+                f"{cell.get('positive_rate', 0):>9.0%}{int(cell.get('periods', 0)):>5}"
+                f"  {cell.get('period_range', '')}"
+            )
+        b = rob.get("bootstrap", {})
+        if b:
+            typer.echo(
+                f"   bootstrap over {b['periods']} periods: {b['mean']:+.4f} "
+                f"95% CI [{b['ci_low']:+.4f}, {b['ci_high']:+.4f}]"
+                f"  {'excludes zero' if b['excludes_zero'] else 'INCLUDES ZERO'}"
+            )
+    cp = summary.get("_counterparty")
+    if cp and "error" not in cp:
+        typer.echo(
+            f"\n   counterparty: FII vs MF accumulation corr "
+            f"{cp['fii_vs_mf_accumulation_corr']:+.4f}, negative in "
+            f"{cp['negative_periods']:.0%} of {cp['periods']} periods"
+        )
+
 
 @app.command(name="test-gex")
 def test_gex(

@@ -545,8 +545,152 @@ def run_accumulation(
                 frame.to_parquet(DEFAULT_PARQUET, index=False)
                 exported = True
 
+    # The robustness battery runs on the pre-registered feature only, against
+    # the holder the effect was localised to. Nothing here searches.
+    if "mf:contemporaneous" in summary and "error" not in summary["mf:contemporaneous"]:
+        try:
+            frame = build_accumulation_frame(
+                conn, holder="mf", window="contemporaneous",
+                drop_corporate_actions=drop_corporate_actions,
+            )
+            summary["_robustness"] = robustness_checks(frame)
+            summary["_counterparty"] = counterparty_check(conn)
+        except ValueError as exc:
+            summary["_robustness"] = {"error": str(exc)}
+
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "accumulation.json").write_text(
         json.dumps(summary, indent=2, default=float) + "\n"
     )
     return summary
+
+
+# ═════════════════════════ robustness ══════════════════════════════════════
+
+#: Pre-registered for the robustness battery: the single feature §9.2 found,
+#: fixed before any subset was examined. Nothing here searches over features.
+PREREGISTERED_FEATURE = "basis_excess_mean"
+
+
+def robustness_checks(
+    frame: pd.DataFrame,
+    *,
+    feature: str = PREREGISTERED_FEATURE,
+    n_boot: int = 2000,
+    seed: int = RANDOM_SEED,
+) -> dict[str, Any]:
+    """Does the one surviving signal hold up under splitting and resampling?
+
+    Out-of-sample confirmation on monthly mutual-fund portfolios is the test
+    this stage really wants, but SEBI requires each AMC to publish on its own
+    site and AMFI does not aggregate them — roughly forty heterogeneous scrapes
+    over sixty months. This battery attacks the same question with data already
+    on disk.
+
+    The result is a **single feature with no fitted parameters**, so there is
+    nothing to overfit except the *choice* of feature. That makes subset
+    stability the right substitute for a holdout: if the effect survives in
+    both halves of the sample and in both halves of the universe, the choice
+    was not luck in one corner of the data.
+
+    ``feature`` is pinned at module level and is not searched over here.
+    """
+    work = frame.copy()
+    work["_momentum"] = work["_window_return"]
+    out: dict[str, Any] = {"feature": feature}
+
+    full = _period_partial_ic(work, feature, "_momentum")
+    out["full_sample"] = _summarize(full)
+
+    # ── Time split. A regime-specific artefact shows up here. ──────────────
+    periods = sorted(work["period"].unique())
+    midpoint = periods[len(periods) // 2]
+    for label, mask in (
+        ("first_half", work["period"] < midpoint),
+        ("second_half", work["period"] >= midpoint),
+    ):
+        subset = work.loc[mask]
+        out[label] = _summarize(_period_partial_ic(subset, feature, "_momentum"))
+        out[label]["period_range"] = (
+            f"{subset['period'].min():%Y-%m} → {subset['period'].max():%Y-%m}"
+        )
+
+    # ── Universe split, within period so it is a size split and not a time
+    # one. Institutions concentrate in large caps, so an effect present only
+    # there would be a liquidity artefact wearing a signal's clothes. ───────
+    median_size = work.groupby("period", observed=True)["_oi_notional"].transform(
+        "median"
+    )
+    for label, mask in (
+        ("large_caps", work["_oi_notional"] >= median_size),
+        ("small_caps", work["_oi_notional"] < median_size),
+    ):
+        out[label] = _summarize(
+            _period_partial_ic(work.loc[mask], feature, "_momentum")
+        )
+
+    # ── Bootstrap over PERIODS, the unit of independence. Resampling rows
+    # would treat ~150 symbols in one quarter as 150 independent draws when
+    # they share that quarter's market entirely. ───────────────────────────
+    clean = full.dropna()
+    if len(clean) >= 5:
+        rng = np.random.default_rng(seed)
+        values = clean.to_numpy()
+        draws = np.array(
+            [rng.choice(values, size=len(values), replace=True).mean()
+             for _ in range(n_boot)]
+        )
+        lo, hi = np.quantile(draws, [0.025, 0.975])
+        out["bootstrap"] = {
+            "mean": float(values.mean()),
+            "ci_low": float(lo),
+            "ci_high": float(hi),
+            "excludes_zero": bool(lo > 0.0),
+            "periods": int(len(values)),
+        }
+    return out
+
+
+def counterparty_check(
+    conn: Any, *, seed: int = RANDOM_SEED
+) -> dict[str, Any]:
+    """Are foreign sellers and domestic funds two sides of the same trade?
+
+    ``basis_excess_mean`` carries opposite signs against FII and mutual-fund
+    accumulation. If that reflects one trade rather than two coincidences, then
+    **FII and MF accumulation should themselves be negatively correlated across
+    symbols**, and the basis signal should be sharpest where the two disagree
+    most.
+
+    This is a structural check, not a metric: it can corroborate the mechanism
+    or contradict it, and neither outcome changes the headline IC.
+    """
+    fii = build_accumulation_frame(conn, holder="fii", window="contemporaneous")
+    mf = build_accumulation_frame(conn, holder="mf", window="contemporaneous")
+
+    joined = fii.merge(
+        mf[["symbol", "date", "accumulation"]],
+        on=["symbol", "date"],
+        suffixes=("_fii", "_mf"),
+    )
+    if joined.empty:
+        return {"error": "no overlapping (symbol, filing) rows"}
+
+    # Within-period rank correlation of the two accumulation series.
+    per_period: list[float] = []
+    for _period, group in joined.groupby("period", observed=True):
+        chunk = group[["accumulation_fii", "accumulation_mf"]].dropna()
+        if len(chunk) < 10:
+            continue
+        ranked = chunk.rank(method="average")
+        corr = ranked["accumulation_fii"].corr(ranked["accumulation_mf"])
+        if np.isfinite(corr):
+            per_period.append(float(corr))
+
+    values = np.asarray(per_period)
+    return {
+        "fii_vs_mf_accumulation_corr": float(values.mean()) if values.size else float("nan"),
+        "negative_periods": float((values < 0).mean()) if values.size else float("nan"),
+        "periods": int(values.size),
+        "rows": int(len(joined)),
+    }

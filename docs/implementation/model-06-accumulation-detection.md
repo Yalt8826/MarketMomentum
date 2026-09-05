@@ -298,6 +298,58 @@ mutual funds (contrarian) it takes the *opposite* sign for the same reason.
 Any future feature built from a price change should be assumed to be a momentum
 proxy until the partial says otherwise.
 
+### 9.5a Robustness: the effect holds under every split tried
+
+Out-of-sample confirmation on monthly mutual-fund portfolios was the intended
+test and **was not attempted**: SEBI requires each AMC to publish on its own
+site and AMFI does not aggregate them, so it is roughly forty heterogeneous
+scrapes over sixty months of scheme-level spreadsheets. That is acquisition
+engineering with a high failure rate, not research.
+
+The result is a **single feature with no fitted parameters**, so there is
+nothing to overfit except the *choice* of feature. Subset stability is
+therefore the right substitute for a holdout — if the effect survives in both
+halves of the sample and both halves of the universe, the choice was not luck
+in one corner of the data. `basis_excess_mean` was pinned at module level
+(`PREREGISTERED_FEATURE`) before any subset was examined; nothing below
+searches.
+
+| Subset | Partial IC | Positive periods | Range |
+|---|---|---|---|
+| **Full sample** | **+0.1374** | 95% of 19 | |
+| First half | +0.0701 | 89% of 9 | 2021-10 → 2023-10 |
+| **Second half** | **+0.1981** | **100% of 10** | 2024-01 → 2026-04 |
+| Large caps (above median OI) | +0.1665 | 79% of 19 | |
+| Small caps | +0.1055 | 79% of 19 | |
+
+**Bootstrap over periods: +0.1374, 95% CI [+0.0902, +0.1801] — excludes zero.**
+Resampling is over *periods*, not rows: ~150 symbols in one quarter share that
+quarter's market entirely, and treating them as independent draws would produce
+an interval far too tight.
+
+The effect is present in **every subset**, which is the point. It is
+**stronger in the second half** (+0.198 vs +0.070) and stronger in large caps,
+neither of which is a problem for its existence — but the time gradient is
+worth flagging: 2024–26 was the peak of the Indian domestic-inflow surge, so
+the effect may be strengthening with the flows that drive it rather than being
+a stable constant.
+
+### 9.5b The counterparty structure is confirmed
+
+If `basis_excess` carries opposite signs against FII and mutual-fund
+accumulation because they are two sides of one trade, then FII and MF
+accumulation should themselves be negatively correlated across symbols.
+
+**They are: rank correlation −0.4807, negative in 100% of 19 quarters.**
+
+Foreign investors and domestic mutual funds are systematically on opposite
+sides of the same stocks, every quarter in the sample. That corroborates the
+mechanism directly rather than by analogy, and it is the strongest structural
+evidence in this project — unlike Stage 1's Pro/Client check, which turned out
+near-tautological because the labels were already −0.80 correlated by
+construction. Here the two series are independently filed by different holders
+and nothing forces them to oppose.
+
 ### 9.6 Honest limits
 
 - **The effect is modest.** IC +0.137 ranks symbols weakly. Its consistency —
@@ -308,7 +360,12 @@ proxy until the partial says otherwise.
   contemporaneous mutual-fund result (p = 0.0046) and not at all for the early
   window.
 - **Not pre-registered.** The feature set was chosen before seeing results but
-  the holder split was not.
+  the holder split was not. The robustness battery in §9.5a *is* pre-registered
+  on the single surviving feature, which removes the exposure for those splits
+  but not for the original selection.
+- **No true out-of-sample test.** §9.5a substitutes subset stability, which is
+  weaker than an independent dataset. Monthly mutual-fund portfolios remain the
+  test that would settle it.
 - **One market, one regime**, 2021–2026, a period of unprecedented Indian
   retail inflow growth. The contrarian DII behaviour may be specific to it.
 
@@ -332,16 +389,21 @@ price momentum, and nothing in the F&O book tested here adds to it.
 
 ## 10. Next steps
 
-1. **Confirm out-of-sample on monthly mutual-fund portfolios.** ~60 observations
-   per symbol instead of 19, an independent source, and it targets exactly the
-   holder the effect lives in. This is now the single highest-value test: it
-   would move the result from provisional to established and would give the
-   early-window question the statistical power 13 quarters cannot.
-2. **Pre-register `basis_excess_mean` and re-run.** The multiple-testing
-   exposure is the weakest part of §9.2 and removing it is cheap.
-3. **Test the counterparty structure directly.** FII and MF carry opposite signs
-   on the same feature; if they are genuinely two sides of one trade, the effect
-   should be strongest in symbols where both moved most.
-4. **Drop `q_fut_direction` from accumulation work**, or rebuild it on the
+Items 2 and 3 of the previous list are done (§9.5a, §9.5b). What remains:
+
+1. **Monthly mutual-fund portfolios**, if the acquisition cost is ever
+   acceptable. ~60 observations per symbol instead of 19, an independent
+   source, targeting exactly the holder the effect lives in. It is the only
+   test that would move this from "robust across subsets" to "confirmed
+   out-of-sample", and it would give the early-window question the power 13
+   quarters cannot. Roughly forty AMC scrapes; see §9.5a.
+2. **Explain the time gradient.** The effect nearly triples between the first
+   and second halves. If it tracks the size of domestic inflows, that is a
+   mechanism; if it tracks something about the 2024–26 market specifically,
+   that is a limitation.
+3. **Drop `q_fut_direction` from accumulation work**, or rebuild it on the
    delta-adjusted residual the option quadrants already use, so price direction
-   is not baked in.
+   is not baked into it (§9.5).
+4. **Test whether the basis signal sharpens where FII and MF disagree most.**
+   §9.5b establishes they oppose on average; the natural follow-up is whether
+   the detection is strongest in exactly those symbols.
