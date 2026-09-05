@@ -1,7 +1,7 @@
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -386,6 +386,90 @@ def flow_features(
     finally:
         conn.close()
     print_flow_summary_table(summary)
+
+
+@app.command(name="market-flow")
+def market_flow(
+    participant: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--participant",
+            help="Participant category to model; repeatable. Default: Pro, Client, FII.",
+        ),
+    ] = None,
+    model: Annotated[
+        list[str] | None,
+        typer.Option("--model", help="ridge and/or xgboost; repeatable."),
+    ] = None,
+    target: Annotated[
+        str,
+        typer.Option("--target", help="participant_oi net column to predict."),
+    ] = "d_net_opt_stock_call",
+    parquet: Annotated[
+        bool,
+        typer.Option(
+            "--parquet/--no-parquet",
+            help="Also export data/processed/market_flow.parquet.",
+        ),
+    ] = True,
+) -> None:
+    """Stage 1: predict tomorrow's market-wide institutional flow from today's features.
+
+    The headline number is the AUC margin over the calendar-only baseline, not
+    the absolute AUC: the expiry cycle is known years in advance and
+    mechanically explains roughly half the raw next-day correlation. Writes
+    models/evaluation/market_flow_<participant>.json. See
+    docs/implementation/model-01-market-flow.md.
+    """
+    import psycopg2
+
+    from mktmtm.ml.market_flow import TARGET_PARTICIPANTS, run_market_flow
+    from mktmtm.storage.db import build_dsn
+
+    participants = tuple(participant) if participant else TARGET_PARTICIPANTS
+    models = tuple(model) if model else ("ridge", "xgboost")
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        summary = run_market_flow(
+            conn,
+            participants=participants,
+            models=models,
+            column=target,
+            parquet=parquet,
+        )
+    finally:
+        conn.close()
+    _print_market_flow_summary(summary)
+
+
+def _print_market_flow_summary(summary: dict[str, Any]) -> None:
+    """Margin over the calendar first; absolute AUC is the less informative number."""
+    for name, result in summary.items():
+        if name.startswith("_"):
+            continue
+        meta = result.get("_meta", {})
+        typer.echo(
+            f"\n{name}  ({meta.get('period', '?')}, "
+            f"{meta.get('rows_scored', meta.get('rows', 0))} of "
+            f"{meta.get('rows', 0)} rows scored)"
+        )
+        typer.echo(f"  base rate {meta.get('label_base_rate', float('nan')):.3f}")
+        for key, margin in sorted(result.get("calendar_margin", {}).items()):
+            mark = "*" if margin.get("significant") else " "
+            typer.echo(
+                f"  {mark} {key:34s} margin {margin['auc_margin_over_calendar']:+.4f}"
+                f"  [{margin['ci_low']:+.4f}, {margin['ci_high']:+.4f}]"
+            )
+        for key, metrics in sorted(result.get("baselines", {}).items()):
+            typer.echo(f"    baseline {key:24s} auc {metrics['auc']:.4f}")
+    check = summary.get("_structural_check")
+    if check:
+        verdict = "PASS" if check["passes"] else "FAIL"
+        typer.echo(
+            f"\nstructural check (Pro vs Client prediction corr): "
+            f"{check['pro_client_prediction_corr']:+.4f}  {verdict}"
+        )
 
 
 @app.command(name="test-gex")

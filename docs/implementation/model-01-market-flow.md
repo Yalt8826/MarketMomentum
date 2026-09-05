@@ -383,8 +383,132 @@ seed, and a bootstrap CI that widens as the block length grows.
 
 ## 9. Results
 
-*To be filled in by the implementer. Report the calendar-margin CI first,
-absolute AUC second, and the Ridge-vs-XGBoost comparison third. If the margin
-is not distinguishable from zero, say so plainly and state what that implies
-for Stages 2 and 3 — a null here does not invalidate them, because they do not
-depend on next-day predictability, but it does change what can be claimed.*
+**Run 2026-09-05.** `uv run mktmtm market-flow`, 3m57s.
+Artifacts: `models/evaluation/market_flow_{pro,client,fii}.json`,
+`market_flow_structural.json`, `data/processed/market_flow.parquet`.
+
+### 9.1 Headline: the flow features do not beat the calendar
+
+Every feature set's AUC margin over `calendar_only`, with a paired
+moving-block bootstrap CI (21-day blocks, 2,000 draws). **Negative is worse
+than the calendar.**
+
+| Feature set / model | Pro | Client | FII |
+|---|---|---|---|
+| `core:ridge` | **−0.036** [−0.079, −0.001] | **−0.035** [−0.079, −0.002] | −0.018 [−0.055, +0.011] |
+| `core:xgboost` | −0.034 [−0.082, +0.012] | −0.033 [−0.073, +0.000] | +0.001 [−0.032, +0.035] |
+| `core+direction:ridge` | −0.018 [−0.059, +0.020] | −0.008 [−0.033, +0.018] | **−0.033** [−0.070, −0.002] |
+| `core+direction:xgboost` | −0.014 [−0.064, +0.042] | **−0.043** [−0.089, −0.003] | −0.010 [−0.043, +0.023] |
+| `core+direction+extended:ridge` | +0.002 [−0.044, +0.041] | −0.002 [−0.042, +0.037] | −0.021 [−0.067, +0.018] |
+| `core+direction+extended:xgboost` | −0.006 [−0.071, +0.053] | −0.035 [−0.086, +0.007] | −0.017 [−0.053, +0.016] |
+
+**Not one margin is significantly positive. Four are significantly negative.**
+The best result across all 18 combinations is +0.002, comfortably inside its
+own confidence interval.
+
+The honest conclusion: **on this task, at this horizon, the derived
+option-and-futures features add nothing to what the expiry calendar already
+tells you about tomorrow's market-wide institutional flow — and adding them to
+the calendar model actively hurts, because they behave as noise that dilutes a
+genuine signal.**
+
+### 9.2 The calendar is a strong predictor on its own
+
+| Participant | `calendar_only` AUC | Base rate | Best flow-model AUC |
+|---|---|---|---|
+| Client | **0.720** | 0.642 | 0.718 (`core+direction+extended:ridge`) |
+| FII | **0.654** | 0.383 | 0.654 (`core:xgboost`) |
+| Pro | **0.612** | 0.434 | 0.614 (`core+direction+extended:ridge`) |
+
+Five calendar features — days to near-month expiry plus four day-of-week
+dummies — predict the sign of tomorrow's market-wide flow at AUC 0.61–0.72.
+That is a much larger effect than anything measured in the per-symbol work, and
+it is entirely mechanical: positions roll on a schedule published years in
+advance. It is the reason this baseline was specified as the headline
+comparison before any model was fitted.
+
+### 9.3 The predictions in advance held up
+
+Both calls recorded in §3 before running anything:
+
+- **Ridge matched or beat XGBoost**, as predicted, in 2 of 3 participants
+  (Pro +0.008, Client +0.033 in AUC; XGBoost wins FII by +0.018). At n=556
+  scored rows the extra flexibility buys nothing.
+- **No AUC anywhere near 0.85.** The measured range, 0.58–0.72, sits close to
+  the 0.55–0.60 expectation once the calendar's contribution is included.
+
+### 9.4 What did work
+
+**The leakage tripwire scores AUC 1.0000 for all three participants.** The
+harness is wired correctly — a stronger statement than any passing unit test.
+
+**The structural check passes decisively.** Pro and Client predictions
+correlate at **−0.897**. The two models were fitted independently, never told
+about each other, and yet learned to move in opposite directions — which is
+what a closed book requires. This is real evidence the models learned market
+structure rather than noise, and it makes the null in §9.1 more credible, not
+less: the pipeline is capable of finding structure when structure is there.
+
+**Stage 1b's direction features carry information.** This answers the question
+left open in [model-02 §7.4](model-02-buildup-quadrants.md). Adding them to the
+core set improves the margin consistently:
+
+| Participant | `core` | `core+direction` | `core+direction+extended` |
+|---|---|---|---|
+| Pro | −0.036 | −0.018 | **+0.002** |
+| Client | −0.035 | −0.008 | −0.002 |
+
+The buildup quadrants roughly **halve** the damage the directionless features
+do, and for Pro they close the gap entirely. So the delta-adjusted direction
+work was not wasted — it is the only feature block that measurably improves
+this task. It just does not get past the calendar.
+
+**Persistence is weak but not zero.** AUC 0.526 (Pro), 0.555 (Client), 0.604
+(FII). This partly corrects an earlier expectation: linear autocorrelation of
+`d_net_*` is ≈0 (FII lag-1 = −0.019), but *sign* persistence is not — a
+rank-based metric picks up dependence that a Pearson correlation misses. FII
+flow in particular has real day-to-day sign persistence.
+
+### 9.5 A structural problem this run exposed
+
+`fut_basis_excess` is `NULL` whenever `fut_dte < 5` (`ANNUALISE_MIN_DTE`,
+introduced because annualising a 1-day basis multiplies it by 365). At market
+level *every* symbol is inside that window simultaneously, so the median
+vanishes for the whole of every expiry week.
+
+**448 of 1,254 dates (36%) are lost this way**, and they are not lost at
+random — they are exactly the days when the calendar baseline is most
+informative. The strongest per-symbol flow feature is systematically absent
+precisely when institutional positioning is most active.
+
+The first version of this run did not equalise for it, and scored
+`calendar_only` on 1,004 dates against the flow models' 556 — inflating the
+baseline's apparent absolute AUC to 0.749 for Client on an easier subset. Every
+number above is now computed on the **same 806-row common set** (556 validation
+rows after the walk-forward warm-up).
+
+Worth trying before concluding the features are useless: an un-annualised
+`fut_basis_pct` aggregate, which is well-behaved at every dte and always
+populated, as a replacement for `basis_excess_med` rather than a companion to
+it.
+
+### 9.6 What this means for Stages 2 and 3
+
+It does **not** invalidate them, and the reason is worth being precise about.
+
+Stage 1 tested one specific claim: *can these features predict tomorrow's
+market-wide flow?* No. But Stages 2 and 3 do not depend on next-day
+predictability:
+
+- **Stage 2** asks whether symbol-days fall into persistent latent states. A
+  state can be real and stable without predicting a market aggregate one day
+  ahead — and the aggregate is a sum over 217 symbols, where per-symbol
+  structure is exactly what cancels.
+- **Stage 3** asks how to *attribute* an observed aggregate across symbols. It
+  conditions on the aggregate rather than predicting it.
+
+What the null does change is the **claim available at the end**. There is no
+basis for saying these features forecast institutional flow. The defensible
+claims are about description and attribution, not prediction — and §9.4's
+structural check plus the direction features' measurable contribution are what
+those rest on.
