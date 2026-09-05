@@ -96,6 +96,23 @@ because every evaluation depends on that 1:1 join.
 
 ---
 
+## Known stage gotchas
+
+Two wrapper bugs were found by the first real run and are pinned by tests in
+`tests/unit/test_pipeline_runner.py`:
+
+- **`preparse` reads `data/raw/bhavcopy/extracted/`**, not the parent — which
+  also holds `filtered/` and partial-download directories. Pointing at the
+  parent fails outright with "no bhavcopy files parsed".
+- **`fetch participant OI` must load as well as fetch.** `run_pipeline` only
+  downloads the daily CSVs; `load_participant_frame` + `write_participant_oi`
+  put them in the table. Omitting the load made the stage report success in
+  58s while `participant_oi` stayed exactly as stale as before — a failure
+  that looks like a pass.
+
+Any new stage wrapper should get a contract test in the same file, because it
+duplicates what a CLI command does and that duplication is the bug surface.
+
 ## If a stage fails
 
 The log names the stage. Re-run from there rather than from the top:

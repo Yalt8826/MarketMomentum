@@ -98,9 +98,12 @@ def _dsn() -> str:
 
 
 def _fetch_bhavcopy() -> None:
+    from mktmtm.config.settings import settings
     from mktmtm.data.bhavcopy import run_pipeline as fetch
 
-    fetch()
+    # run_pipeline defaults to max_workers=1; the CLI passes the configured
+    # value and so must this, or an overnight run is needlessly serial.
+    fetch(max_workers=settings.max_workers)
 
 
 def _fetch_yahoo() -> None:
@@ -110,9 +113,24 @@ def _fetch_yahoo() -> None:
 
 
 def _fetch_participant_oi() -> None:
-    from mktmtm.data.participant_oi import run_pipeline as fetch
+    from mktmtm.data.participant_oi import (
+        load_participant_frame,
+        write_participant_oi,
+    )
+    from mktmtm.data.participant_oi import (
+        run_pipeline as fetch,
+    )
 
+    # `run_pipeline` only downloads the daily CSVs. Loading them into the table
+    # is a separate step, and omitting it left the stage reporting success in
+    # 58s while participant_oi stayed exactly as stale as before.
     fetch()
+    frame = load_participant_frame()
+    conn = _connect()
+    try:
+        write_participant_oi(conn, frame)
+    finally:
+        conn.close()
 
 
 def _fetch_deals() -> None:
@@ -141,8 +159,10 @@ def _preparse() -> None:
     from mktmtm.config.settings import settings
     from mktmtm.data.bhavcopy import build_bhavcopy_cache
 
+    # The CSVs live under extracted/, not at the top of bhavcopy/ — which also
+    # holds filtered/ and partial-download directories.
     build_bhavcopy_cache(
-        settings.raw_data_dir / "bhavcopy",
+        settings.raw_data_dir / "bhavcopy" / "extracted",
         settings.processed_data_dir / "bhavcopy_cache.parquet",
     )
 
