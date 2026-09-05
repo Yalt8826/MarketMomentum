@@ -137,8 +137,9 @@ consistency also collapses from 97% at lag 1 to 65% at lag 2, where the genuine
 futures lead *strengthens*. `oi_outlier_direction` is the same story with a
 same-day correlation of **+0.84**.
 
-The futures lead is not explicable this way: its same-day correlation is only
-−0.153, and −0.153 × −0.075 ≈ +0.012, roughly a quarter of the observed +0.047.
+The futures lead is not explicable this way — but the margin is smaller than a
+first pass suggested, and §2.5 measures it properly rather than arguing from
+the cross-sectional numbers as an earlier version of this section did.
 
 **A normalisation artefact.** An intermediate version applied causal
 within-symbol z-scoring to remove symbol fixed effects, and reported
@@ -169,35 +170,97 @@ it is the one the conclusions rest on.
 
 ---
 
+### 2.5 Two follow-up checks — one confirms, one does not
+
+**Check 1: partial out the same-day relationship.** The raw lead double-counts
+a mechanical route — the signal correlates with the target *today*, and the
+target predicts its own future. Partialling out today's `opt_direction` removes
+exactly that path. Per-symbol, then averaged:
+
+| Lag | Raw | **Partial** | Explained by the mechanical route | Consistency |
+|---|---|---|---|---|
+| 1 | +0.0297 | +0.0102 | **66%** | 65% |
+| 2 | +0.0351 | **+0.0325** | 7% | **84%** |
+| 3 | +0.0226 | **+0.0217** | 4% | 77% |
+| 5 | +0.0143 | +0.0138 | 3% | 62% |
+
+**The lag-1 effect is mostly mechanical; lags 2–5 survive almost intact.** That
+is internally consistent: `opt_direction`'s own autocorrelation is −0.092 at
+lag 1 but only −0.003 by lag 5, so the mechanical route can only operate
+strongly at lag 1.
+
+So the lead is real, but it operates at a **2–3 day horizon**, not one day. The
+peak is lag 2: partial **+0.0325** with 84% of symbols agreeing on sign.
+
+The same control annihilates the mirrored signals, exactly as §2.3 predicted:
+`ce_writer_frac`'s +0.0669 at lag 1 becomes **−0.0046**.
+
+**Check 2: condition on activity.** If the lead is institutional, it should be
+stronger on days with heavy futures open-interest change and weaker on quiet
+days. Within-symbol terciles of `|fut_oi_chg_notional|`, partial lead at lag 2:
+
+| Tercile of activity on day `t` | Partial lead | Consistency |
+|---|---|---|
+| Low (quiet days) | +0.0306 | 69% |
+| Mid | +0.0347 | 76% |
+| **High (heavy OI change)** | **+0.0285** | 69% |
+
+**Flat.** No monotone increase with activity — if anything the high tercile is
+marginally the weakest. The same pattern holds at lag 3 (+0.026 / +0.020 /
++0.022).
+
+**This fails the institutional hypothesis.** A lead driven by whales
+accumulating should concentrate on the days whales are active. This one is
+present just as strongly on a symbol's quietest third of days. The most likely
+reading is **market microstructure** — a pervasive, always-on sequencing
+between how the futures and options books absorb the same information, or
+routine dealer hedging — rather than episodic institutional accumulation.
+
 ## 3. What this means
 
-The project's title question gets a two-part answer:
+The project's title question gets a three-part answer:
 
 1. **Positioning direction does not persist.** Futures direction is
    uncorrelated with its own future; option direction actively reverses. There
    is no momentum to ride in the positioning signal itself.
-2. **But there is a directional lead between instruments.** Futures
-   positioning leads option positioning by 1–3 days, asymmetrically, broadly
-   across symbols, and this survives every control applied.
+2. **There is a genuine directional lead between instruments.** Futures
+   positioning leads option positioning at a **2–3 day** horizon — partial
+   +0.0325 at lag 2, 84% of symbols agreeing — asymmetric, and surviving the
+   same-day control that annihilates every competing signal.
+3. **But it is almost certainly not institutional.** It is equally strong on a
+   symbol's quietest days as on its heaviest, which is not how episodic whale
+   accumulation would look.
 
-This is the first positive result in the project that withstands scrutiny. It
-is small, and it is about the *internal structure of the derivatives market*
-rather than about price — which is what the project set out to study.
+So this is a real, reproducible finding about **derivatives market
+microstructure** — the futures book leads the options book by a couple of days
+— and not a whale detector. That distinction matters for how it is written up:
+it is a contribution about market structure, not evidence that the project's
+features detect institutional activity.
+
+The methodological yield may be the more valuable half. Three separate signals
+looked like discoveries and were killed by controls specified in advance:
+`ce_writer_frac` (shared construction), the +0.298 self-persistence (a
+normalisation artefact), and the institutional interpretation of the surviving
+lead (flat across activity). Only the last of these would have been caught by a
+reviewer rather than by the analysis itself.
 
 ---
 
 ## 4. Next steps
 
-1. **Establish the mechanism.** Is the lead driven by the same institutions
-   layering into options after futures, or by dealers hedging into options
-   against futures flow? `participant_oi` splits futures and options by
-   category and can distinguish these at market level.
-2. **Condition on magnitude.** The lead is measured on all symbol-days. If it
-   is genuinely institutional it should be stronger on days with large
-   `fut_oi_chg_notional`, and absent on quiet days.
-3. **Validate against real whale events** — the bulk/block deal path. If the
-   futures→options lead is institutional, it should be strongest around
-   externally dated large trades.
-4. **Test the reverse conditioning.** Does the lead survive when the same-day
-   futures/option relationship (−0.218) is partialled out explicitly, rather
-   than argued around as in §2.3?
+Checks 1 and 2 above were items 2 and 4 on the original list; both are done.
+What remains:
+
+1. **Look for whale activity in *deviations* from the lead, not in the lead
+   itself.** §2.5 established the futures→options coupling as a constant
+   background property. If that is the baseline, an institutional event might
+   show up as an **anomaly** in the coupling — a symbol-day where the two books
+   decouple, or couple unusually tightly. That reframing is the most promising
+   thing to come out of this stage, and it is untested.
+2. **Establish the mechanism.** Dealer hedging or information sequencing?
+   `participant_oi` splits futures and options by category and can separate
+   these at market level.
+3. **Validate against real whale events** — the bulk/block deal path. Now with
+   a sharper hypothesis than before: not "does the lead appear near block
+   deals" (§2.5 suggests it appears everywhere) but "does the *coupling
+   strength* change near them".

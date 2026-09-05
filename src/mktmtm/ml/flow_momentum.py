@@ -197,25 +197,55 @@ def _lead_lag(
     is usually a few symbols dragging an average.
     """
     rows: list[float] = []
+    partials: list[float] = []
     for _symbol, group in frame.groupby("symbol", observed=True, sort=False):
         x = group[signal]
         y = group[target].shift(-lag) if lag else group[target]
+        z = group[target]  # the same-day value of the thing being predicted
         mask = x.notna() & y.notna()
-        if int(mask.sum()) > 60:
-            corr = x[mask].corr(y[mask])
-            if np.isfinite(corr):
-                rows.append(float(corr))
+        if int(mask.sum()) <= 60:
+            continue
+        corr = x[mask].corr(y[mask])
+        if not np.isfinite(corr):
+            continue
+        rows.append(float(corr))
+        if lag:
+            both = mask & z.notna()
+            if int(both.sum()) > 60:
+                partials.append(_partial(x[both], y[both], z[both]))
+
     if not rows:
         return {"mean": float("nan"), "median": float("nan"),
-                "consistency": float("nan"), "symbols": 0.0}
+                "consistency": float("nan"), "symbols": 0.0,
+                "partial": float("nan"), "partial_consistency": float("nan")}
     values = np.asarray(rows)
     mean = float(values.mean())
+    clean = np.asarray([v for v in partials if np.isfinite(v)])
+    partial_mean = float(clean.mean()) if clean.size else float("nan")
     return {
         "mean": mean,
         "median": float(np.median(values)),
         "consistency": float((np.sign(values) == np.sign(mean)).mean()),
         "symbols": float(len(values)),
+        # The raw lead double-counts a mechanical route: the signal is
+        # correlated with the target *today*, and the target predicts its own
+        # future. Partialling out today's target removes exactly that path, and
+        # is what separates a genuine lead from an inherited reversal.
+        "partial": partial_mean,
+        "partial_consistency": (
+            float((np.sign(clean) == np.sign(partial_mean)).mean())
+            if clean.size else float("nan")
+        ),
     }
+
+
+def _partial(x: pd.Series, y: pd.Series, z: pd.Series) -> float:
+    """First-order partial correlation of ``x`` and ``y`` controlling ``z``."""
+    rxy, rxz, ryz = x.corr(y), x.corr(z), y.corr(z)
+    if not all(np.isfinite(v) for v in (rxy, rxz, ryz)):
+        return float("nan")
+    denominator = np.sqrt((1.0 - rxz**2) * (1.0 - ryz**2))
+    return float((rxy - rxz * ryz) / denominator) if denominator > 0 else float("nan")
 
 
 def momentum_table(

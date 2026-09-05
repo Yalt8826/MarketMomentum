@@ -21,7 +21,7 @@ finding.**
 | **1b** — buildup quadrants | Can open-interest builds be given a direction? | **Success** | Delta adjustment required: raw vs adjusted classification disagrees on **35.8%** of contracts. |
 | **2** — regime HMM | Do symbol-days fall into persistent latent positioning regimes? | **Negative** | Minimum state persistence **never exceeds 0.5 at any state count** (0.367 → 0.072). |
 | **3** — attribution | Can a market-wide flow figure be attributed to individual symbols? | **Mixed, leaning negative** | Decomposes well (R² 0.45) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones. |
-| **4** — flow momentum | Does a directional build continue? | **Split: no momentum, but a real lead** | Positioning direction has ~zero autocorrelation. But futures direction **leads** option direction 1–3 days: +0.030, **77–86% of symbols agree**, reverse ≈ 0. |
+| **4** — flow momentum | Does a directional build continue? | **Split: a real lead, but not a whale one** | No momentum (autocorrelation ≈ 0). Futures **leads** options at 2–3 days (partial +0.033, 84% of symbols). But it is **flat across activity terciles**, so it is microstructure, not institutional. |
 
 **The defensible claims from this work:**
 
@@ -31,8 +31,11 @@ finding.**
 > by the expiry calendar than by any derived feature built here.
 
 > Positioning direction does not persist — but **futures positioning leads
-> option positioning by one to three days**, asymmetrically and broadly across
-> symbols. This is the one positive result that survives every control applied.
+> option positioning at a two-to-three day horizon**, asymmetrically and
+> broadly across symbols. This is the one positive result that survives every
+> control applied. It is, however, **equally strong on quiet days as on
+> high-activity days**, so it describes derivatives market microstructure
+> rather than institutional behaviour.
 
 ---
 
@@ -344,6 +347,32 @@ Same-day the relationship is strongly *negative* (−0.218, 99% of symbols):
 futures long buildup coincides with writer-dominated option flow, then option
 positioning turns bullish over the next one to three days. That sign flip is
 what makes it a lead rather than a correlation.
+
+### Two follow-up checks: one confirms, one refutes
+
+**Partialling out the same-day relationship** (which removes the mechanical
+route *signal→target today→target tomorrow*) leaves the lead intact from lag 2
+onward, and shows lag 1 was mostly mechanical:
+
+| Lag | Raw | **Partial** | Mechanical share | Consistency |
+|---|---|---|---|---|
+| 1 | +0.0297 | +0.0102 | **66%** | 65% |
+| 2 | +0.0351 | **+0.0325** | 7% | **84%** |
+| 3 | +0.0226 | **+0.0217** | 4% | 77% |
+| 5 | +0.0143 | +0.0138 | 3% | 62% |
+
+**Conditioning on activity refutes the institutional reading.** Within-symbol
+terciles of `|fut_oi_chg_notional|`, partial lead at lag 2:
+
+| Activity on day `t` | Partial lead | Consistency |
+|---|---|---|
+| Low (quiet days) | +0.0306 | 69% |
+| Mid | +0.0347 | 76% |
+| **High (heavy OI change)** | **+0.0285** | 69% |
+
+**Flat.** A lead driven by whales should concentrate where whales are active.
+This one is just as strong on a symbol's quietest third of days, so it is a
+pervasive microstructure property — not episodic institutional accumulation.
 
 ### Two spurious findings caught
 

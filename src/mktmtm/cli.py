@@ -695,14 +695,25 @@ def _print_momentum_table(result: dict[str, Any]) -> None:
         typer.echo(
             "\n── raw within-symbol lead-lag (no ranking, no normalisation) " + "─" * 3
         )
-        typer.echo("   corr(signal_t, target_t+lag); (c) = share of symbols agreeing on sign")
+        typer.echo(
+            "   raw/partial(consistency) — partial controls the same-day target,"
+        )
+        typer.echo(
+            "   which removes the mechanical route signal_t -> target_t -> target_t+lag"
+        )
         for target, signals in leadlag.items():
             typer.echo(f"  → target: {target}")
             for name, cells in signals.items():
                 if name == target:
                     continue
                 parts = "".join(
-                    f"lag{lag}:{c['mean']:+.4f}({c['consistency']:.0%})  "
+                    f"lag{lag}:{c['mean']:+.4f}"
+                    + (
+                        f"/{c['partial']:+.4f}"
+                        if lag != "0" and c.get("partial") == c.get("partial")
+                        else ""
+                    )
+                    + f"({c['consistency']:.0%})  "
                     for lag, c in sorted(cells.items(), key=lambda kv: int(kv[0]))
                 )
                 typer.echo(f"    {name:<24}{parts}")

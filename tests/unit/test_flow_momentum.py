@@ -207,7 +207,10 @@ def test_within_symbol_leadlag_is_reported_alongside_the_grid() -> None:
     table = momentum_table(_panel(), horizons=(1,))
     assert set(table["within_symbol_leadlag"]) == set(table["grid"])
     cell = table["within_symbol_leadlag"]["q_fut_direction"]["opt_direction"]["1"]
-    assert set(cell) == {"mean", "median", "consistency", "symbols"}
+    assert set(cell) == {
+        "mean", "median", "consistency", "symbols",
+        "partial", "partial_consistency",
+    }
     assert 0.0 <= cell["consistency"] <= 1.0
 
 
@@ -229,3 +232,32 @@ def test_multiple_comparison_count_is_reported() -> None:
     table = momentum_table(_panel(), horizons=(1, 5))
     assert table["n_tests"] == len(SIGNALS) * len(TARGETS) * 2
     assert table["expected_false_positives"] > 0
+
+
+def test_partial_removes_the_mechanical_route() -> None:
+    """A "lead" that is only signal_t -> target_t -> target_t+1 must vanish.
+
+    Construct a target with genuine self-reversal and a signal that is purely a
+    same-day mirror of it. The raw lead is then non-zero by arithmetic alone,
+    and only the partial correlation reveals that nothing leads anything.
+    """
+    rng = np.random.default_rng(4)
+    n = 800
+    target = rng.normal(size=n)
+    # Target reverses against itself; signal mirrors the target contemporaneously.
+    reverting = target.copy()
+    for i in range(1, n):
+        reverting[i] = -0.5 * reverting[i - 1] + rng.normal(scale=0.5)
+    frame = pd.DataFrame(
+        {
+            "symbol": "AAA",
+            "date": pd.bdate_range("2022-01-03", periods=n),
+            "signal": -reverting + rng.normal(scale=0.05, size=n),
+            "target": reverting,
+        }
+    )
+    from mktmtm.ml.flow_momentum import _lead_lag
+
+    cell = _lead_lag(frame, "signal", "target", 1)
+    assert cell["mean"] > 0.2, "the mechanical route should show a raw lead"
+    assert abs(cell["partial"]) < 0.1, "partialling it out should remove it"

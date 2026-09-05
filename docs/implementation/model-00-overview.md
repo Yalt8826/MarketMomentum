@@ -14,7 +14,7 @@ the inter-stage contracts. The per-stage files are useless without it.
 | 1b — quadrants | **Built and useful.** | Delta adjustment is required: raw vs adjusted disagree on **35.8%** of contracts. Direction features are the only block that improves Stage 1. |
 | 2 — regime HMM | **Negative.** No persistent discrete regimes. | Min transition diagonal **never exceeds 0.5 at any k** (0.367 → 0.072); BIC never turns around. |
 | 3 — attribution | **Mixed, leaning negative.** Decomposes but does not identify. | Placebo passes (R² 0.45 vs −0.01) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones for 2 of 3 participants. |
-| [4 — flow momentum](model-05-flow-momentum.md) | **Split.** No momentum, but a real cross-instrument lead. | Positioning direction has ~zero autocorrelation. Futures **leads** options 1–3 days: +0.030, 77–86% of symbols agree, reverse ≈ 0. |
+| [4 — flow momentum](model-05-flow-momentum.md) | **Split.** A real lead, but microstructure rather than whales. | No momentum (autocorrelation ≈ 0). Futures leads options at 2–3 days (partial +0.033, 84% of symbols) — but **flat across activity terciles**, so not institutional. |
 
 **Full results report: [`../results/README.md`](../results/README.md)** — consolidated
 across all four stages, with methodology, limitations and reproduction steps.
