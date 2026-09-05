@@ -28,3 +28,4 @@ models/promoted/
 
 etl_run.log
 *.log
+logs/

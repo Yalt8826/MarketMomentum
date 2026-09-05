@@ -22,6 +22,9 @@ psql "$PG_DSN" -f src/mktmtm/storage/sql/init_db.sql   # runs all DDLs in depend
 uv run python scripts/verify_db_health.py              # health gate; exits 1 on structural flaws
 ```
 
+**To run everything: `./scripts/run_pipeline.sh`** (or `--no-etl` / `--models`).
+Timed, logged to `logs/`, stops at the first failure. See `docs/runbook.md`.
+
 Full pipeline order (ML training path):
 
 ```bash
@@ -186,6 +189,8 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+`docs/runbook.md` (running the pipeline end to end: order, measured timings, the three
+things that bite, and how to score the frozen nowcast),
 `docs/implementation/nowcast.md` (the detector run forward against an undisclosed quarter:
 window calibration, momentum residualisation, and why the prediction record is committed
 rather than left in gitignored `models/`),
