@@ -93,6 +93,7 @@ DEFAULT_PARQUET = Path("data/processed/accumulation.parquet")
 #: Diffuse-accumulation hypothesis: the average level over the window.
 MEAN_FEATURES = (
     "q_fut_direction_mean",
+    "q_fut_direction_resid_mean",
     "opt_direction_mean",
     "ce_writer_frac_mean",
     "basis_excess_mean",
@@ -115,7 +116,7 @@ TAIL_FEATURES = (
 
 _FLOW_SQL = """
 SELECT f.symbol, f.date,
-       f.q_fut_direction, f.opt_direction, f.ce_writer_frac,
+       f.q_fut_direction, f.q_fut_direction_resid, f.opt_direction, f.ce_writer_frac,
        f.fut_basis_excess, f.oi_outlier_share, f.oi_outlier_count,
        f.fut_oi_chg_notional, f.fut_oi_notional, f.oi_outlier_build_notional,
        m.gex, m.put_call_oi_ratio, m.ret_1d
@@ -258,6 +259,8 @@ def aggregate_window(daily: pd.DataFrame) -> dict[str, float]:
     out: dict[str, float] = {
         # Diffuse hypothesis.
         "q_fut_direction_mean": float(daily["q_fut_direction"].mean()),
+        # Basis-change variant: momentum-free by construction (features/flow.py).
+        "q_fut_direction_resid_mean": float(daily["q_fut_direction_resid"].mean()),
         "opt_direction_mean": float(daily["opt_direction"].mean()),
         "ce_writer_frac_mean": float(daily["ce_writer_frac"].mean()),
         "basis_excess_mean": float(daily["fut_basis_excess"].mean()),

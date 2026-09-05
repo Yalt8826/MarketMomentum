@@ -163,6 +163,7 @@ _QUADRANT_COLUMNS = (
     "opt_direction",
     "oi_outlier_writer_frac",
     "oi_outlier_direction",
+    "q_fut_direction_resid",
 )
 
 #: Column identity *and* order for ``flow_features``; ``init_flow_features.sql``
@@ -739,9 +740,10 @@ def futures_quadrants(futures: pd.DataFrame) -> pd.DataFrame:
         return _empty_keyed_frame(list(_FUT_QUADRANT_COLUMNS))
 
     work = work.sort_values(["SYMBOL", "EXPIRY_DT", "DATE"], kind="stable")
-    work["mark_prev"] = work.groupby(
-        ["SYMBOL", "EXPIRY_DT"], observed=True, sort=False
-    )["mark"].shift(1)
+    grouped = work.groupby(["SYMBOL", "EXPIRY_DT"], observed=True, sort=False)
+    work["mark_prev"] = grouped["mark"].shift(1)
+    # Same grouping, so spot_prev lines up with mark_prev row for row.
+    work["spot_prev"] = grouped["spot"].shift(1)
 
     work = work.loc[
         (work["CONTRACTS"].fillna(0) > 0)
@@ -764,15 +766,36 @@ def futures_quadrants(futures: pd.DataFrame) -> pd.DataFrame:
     work["q_short_cover_notional"] = notional.where(up & closed, 0.0)
     work["q_long_unwind_notional"] = notional.where(down & closed, 0.0)
 
+    # Basis-change variant. A future's delta to its underlying is ~1, so the
+    # delta-adjusted residual that `option_quadrants` applies reduces here to
+    #     (F - F_prev) - (S - S_prev) = the change in basis.
+    # That reclassifies the quadrant from "price rose while OI rose" — which is
+    # a momentum statement, and is why the raw q_fut_direction turned out to be
+    # a momentum proxy in Stage 5 — to "futures richened against spot while OI
+    # rose", which is a positioning statement. Kept alongside the raw version
+    # rather than replacing it, so the published results stay reproducible and
+    # the two can be compared directly.
+    d_basis = d_price - (
+        work["spot"].astype("float64") - work["spot_prev"].astype("float64")
+    )
+    r_up, r_down = d_basis > 0, d_basis < 0
+    # Richening on new interest, or cheapening on an unwind, both read as
+    # demand for the long side; the mirror of each reads as supply.
+    work["_r_bull"] = notional.where((r_up & opened) | (r_down & closed), 0.0)
+    work["_r_bear"] = notional.where((r_down & opened) | (r_up & closed), 0.0)
+
     agg = work.groupby(["SYMBOL", "DATE"], as_index=False)[
-        list(_FUT_QUADRANT_COLUMNS[:4])
+        [*_FUT_QUADRANT_COLUMNS[:4], "_r_bull", "_r_bear"]
     ].sum().rename(columns={"SYMBOL": "symbol", "DATE": "date"})
 
     agg["q_fut_direction"] = _direction_score(
         agg["q_long_buildup_notional"] + agg["q_short_cover_notional"],
         agg["q_short_buildup_notional"] + agg["q_long_unwind_notional"],
     )
-    return agg[["symbol", "date", *_FUT_QUADRANT_COLUMNS]]
+    agg["q_fut_direction_resid"] = _direction_score(agg["_r_bull"], agg["_r_bear"])
+    return agg[
+        ["symbol", "date", *_FUT_QUADRANT_COLUMNS, "q_fut_direction_resid"]
+    ]
 
 
 # ═════════════════════════ cache streaming + orchestration ═════════════════
@@ -1042,7 +1065,7 @@ def _futures_pass(
     if frame.empty:
         return (
             pd.DataFrame(columns=["symbol", "date", "spot", *_FUTURES_COLUMNS]),
-            pd.DataFrame(columns=["symbol", "date", *_FUT_QUADRANT_COLUMNS]),
+            _empty_keyed_frame([*_FUT_QUADRANT_COLUMNS, "q_fut_direction_resid"]),
         )
     merged = _merge_spot(frame, spot)
     return futures_basis(merged), futures_quadrants(merged)

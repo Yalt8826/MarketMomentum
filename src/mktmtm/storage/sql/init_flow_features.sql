@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS flow_features (
     opt_direction             DOUBLE PRECISION,  -- calls bought + puts written = bullish
     oi_outlier_writer_frac    DOUBLE PRECISION,  -- the same, flagged strikes only
     oi_outlier_direction      DOUBLE PRECISION,  -- the outlier detector's direction
+    q_fut_direction_resid     DOUBLE PRECISION,  -- basis-change variant, momentum-free
 
     PRIMARY KEY (symbol, date)
 );
@@ -96,7 +97,12 @@ ALTER TABLE flow_features
     ADD COLUMN IF NOT EXISTS pe_writer_frac           DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS opt_direction            DOUBLE PRECISION,
     ADD COLUMN IF NOT EXISTS oi_outlier_writer_frac   DOUBLE PRECISION,
-    ADD COLUMN IF NOT EXISTS oi_outlier_direction     DOUBLE PRECISION;
+    ADD COLUMN IF NOT EXISTS oi_outlier_direction     DOUBLE PRECISION,
+    -- A future's delta to spot is ~1, so the delta-adjusted residual reduces to
+    -- the change in basis: "futures richened while OI rose" (positioning)
+    -- rather than "price rose while OI rose" (momentum, which is why the raw
+    -- q_fut_direction proved a momentum proxy in Stage 5).
+    ADD COLUMN IF NOT EXISTS q_fut_direction_resid    DOUBLE PRECISION;
 
 -- Cross-sectional access (all symbols on one date) is the shape every rank-IC
 -- and HMM-fitting query uses; the primary key already covers the per-symbol

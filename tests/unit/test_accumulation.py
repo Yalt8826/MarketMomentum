@@ -174,6 +174,7 @@ def _daily(n: int = 60) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "q_fut_direction": rng.uniform(-1, 1, n),
+            "q_fut_direction_resid": rng.uniform(-1, 1, n),
             "opt_direction": rng.uniform(-1, 1, n),
             "ce_writer_frac": rng.uniform(0, 1, n),
             "fut_basis_excess": rng.normal(0, 2, n),

@@ -436,6 +436,51 @@ for significance. This is the best available explanation of the gradient, not
 an established one, and it will stay that way until there are more periods —
 which is precisely what monthly mutual-fund data would provide.
 
+### 9.5d Rebuilding `q_fut_direction` — the fix works, the feature still does not
+
+§9.5 diagnosed `q_fut_direction` as a momentum proxy because price direction is
+baked into its construction. A future's delta to its underlying is ≈1, so the
+delta-adjusted residual that `option_quadrants` already applies reduces for
+futures to
+
+```
+(F − F_prev) − (S − S_prev)   =   the change in basis
+```
+
+which reclassifies the quadrant from *"price rose while OI rose"* (momentum) to
+*"futures richened against spot while OI rose"* (positioning). Added as
+`q_fut_direction_resid` alongside the original rather than replacing it, so the
+published results stay reproducible.
+
+**The de-contamination worked.** Share of raw IC surviving the momentum
+control, against FII accumulation — the momentum-driven holder, where
+contamination shows most:
+
+| Feature | Raw IC | Partial | **IC retained** |
+|---|---|---|---|
+| `q_fut_direction` | +0.263 | +0.044 | **17%** |
+| `q_fut_direction_resid` | +0.135 | +0.056 | **41%** |
+| `basis_excess_mean` | −0.057 | −0.054 | 94% |
+
+Stripping the spot move more than doubles the fraction that survives. The
+diagnosis in §9.5 was correct and the fix addresses it.
+
+**But it does not become a useful feature.** Its partial IC is +0.056 against
+FII and −0.050 against mutual funds (37% of periods positive) — both near the
+noise floor, and nowhere near `basis_excess_mean`.
+
+In hindsight that is unsurprising, and the reason is worth stating: the
+basis-change quadrant is a **coarse, sign-only version of what
+`basis_excess_mean` already measures continuously**. One is the sign of the
+basis change crossed with the sign of the OI change; the other is the level of
+the basis against cost of carry. The continuous measure dominates the
+discretised one, which is the ordinary outcome when a feature is thresholded
+for no reason.
+
+**The headline result is unchanged**: `basis_excess_mean` → mutual-fund
+accumulation remains +0.1374 partial, 18 of 19 quarters, after adding the new
+feature to the search.
+
 ### 9.6 Honest limits
 
 - **The effect is modest.** IC +0.137 ranks symbols weakly. Its consistency —

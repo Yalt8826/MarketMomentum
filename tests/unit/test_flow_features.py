@@ -731,3 +731,40 @@ def test_contracts_without_delta_are_dropped_not_guessed() -> None:
     frame = _options_two_days("CE", +5.0).drop(columns=["delta_prev"])
     out = option_quadrants(frame)
     assert out.empty or pd.isna(out["opt_direction"].iloc[0])
+
+
+def test_basis_variant_ignores_a_pure_market_move() -> None:
+    """A future tracking spot one-for-one carries no positioning information.
+
+    The raw quadrant calls that a long buildup because the price rose. The
+    residual variant subtracts the spot move — a future's delta to its
+    underlying is ~1 — leaving the change in basis, which is zero here.
+    """
+    frame = _futures_two_days(+5.0, +1000.0)
+    frame["spot"] = [SPOT, SPOT + 5.0]  # spot moved exactly with the future
+    out = futures_quadrants(frame)
+    row = out.loc[out["date"] == DAY].iloc[0]
+    assert row["q_fut_direction"] == 1.0, "raw sees a long buildup"
+    assert pd.isna(row["q_fut_direction_resid"]), "residual sees no basis change"
+
+
+def test_basis_variant_fires_when_futures_richen(  ) -> None:
+    """Futures outpacing spot while OI rises is demand for the long side."""
+    frame = _futures_two_days(+5.0, +1000.0)
+    frame["spot"] = [SPOT, SPOT + 1.0]  # future +5, spot +1 -> basis +4
+    out = futures_quadrants(frame)
+    assert out.loc[out["date"] == DAY, "q_fut_direction_resid"].iloc[0] == 1.0
+
+
+def test_basis_variant_can_oppose_the_raw_one() -> None:
+    """Price up but basis down: momentum says bullish, positioning says supply.
+
+    This divergence is the whole point of the variant — the raw score proved a
+    momentum proxy in Stage 5 precisely because it cannot tell these apart.
+    """
+    frame = _futures_two_days(+5.0, +1000.0)
+    frame["spot"] = [SPOT, SPOT + 9.0]  # future +5, spot +9 -> basis -4
+    out = futures_quadrants(frame)
+    row = out.loc[out["date"] == DAY].iloc[0]
+    assert row["q_fut_direction"] == 1.0
+    assert row["q_fut_direction_resid"] == -1.0
