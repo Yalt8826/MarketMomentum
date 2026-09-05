@@ -184,6 +184,97 @@ else:
     else:
         ok(f"{pq_path.name} rows match ({len(pq):,}, {len(pq.columns)} cols)")
 
+print("\n" + "=" * 70)
+print("6) DERIVED FEATURE TABLES")
+print("=" * 70)
+# These five tables did not exist when this gate was written, and it kept
+# reporting PASS while validating none of them.
+
+ff = q("SELECT count(*), count(distinct symbol) FROM flow_features")[0]
+if ff[0] != mrows:
+    bad(f"flow_features rows ({ff[0]:,}) != ml_dataset rows ({mrows:,}) — the 1:1 join is broken")
+else:
+    ok(f"flow_features 1:1 with ml_dataset ({ff[0]:,} rows, {ff[1]} symbols)")
+
+# Direction scores are bounded ratios by construction; anything outside [-1, 1]
+# means a denominator went wrong.
+oob = q(
+    "SELECT count(*) FROM flow_features WHERE "
+    "q_fut_direction NOT BETWEEN -1 AND 1 OR opt_direction NOT BETWEEN -1 AND 1 "
+    "OR oi_outlier_direction NOT BETWEEN -1 AND 1"
+)[0][0]
+if oob:
+    bad(f"{oob:,} flow_features rows have a direction score outside [-1, 1]")
+else:
+    ok("direction scores within [-1, 1]")
+
+# The outlier detector's flag rate was calibrated to 10-17%; drift outside that
+# means the thresholds no longer mean what docs/implementation says they mean.
+flag = q("SELECT avg((oi_outlier_count > 0)::int) FROM flow_features")[0][0]
+if flag is None or not (0.05 <= float(flag) <= 0.30):
+    bad(f"outlier flag rate {float(flag or 0):.1%} outside the calibrated 5-30% band")
+else:
+    ok(f"outlier flag rate {float(flag):.1%} (calibrated band 10-17%)")
+
+for name in ("flow_regimes", "flow_attribution", "shareholding", "deals"):
+    n = q(f"SELECT count(*) FROM {name}")[0][0]
+    if n == 0:
+        print(f"  {name:18s} empty (not built)")
+    else:
+        print(f"  {name:18s} {n:>9,} rows")
+
+print("\n" + "=" * 70)
+print("7) SHAREHOLDING — SCHEMA-BOUNDARY DISCONTINUITY")
+print("=" * 70)
+# Both silent data defects this session were XBRL taxonomy changes that zeroed
+# or mis-mapped a holder column on one side of ~2023 only. Neither was caught
+# by a test; both were caught by noticing a discontinuity. This encodes that
+# check: a holding that jumps at the boundary is a parser defect until proven
+# otherwise.
+shp = q("SELECT count(*) FROM shareholding")[0][0]
+if not shp:
+    print("  shareholding empty — skipping")
+else:
+    for col in ("fii_shares", "dii_shares", "mf_shares"):
+        zeros = q(
+            f"SELECT date_part('year', date)::int AS y, "
+            f"avg(({col} IS NULL OR {col} = 0)::int) "
+            f"FROM shareholding WHERE date >= '2021-01-01' GROUP BY 1 ORDER BY 1"
+        )
+        by_year = {int(y): float(r) for y, r in zeros}
+        early = [v for k, v in by_year.items() if k <= 2022]
+        late = [v for k, v in by_year.items() if k >= 2023]
+        if not early or not late:
+            continue
+        gap = (sum(early) / len(early)) - (sum(late) / len(late))
+        if gap > 0.20:
+            bad(
+                f"{col}: null-or-zero rate is {gap:.0%} higher before 2023 than after "
+                f"— a taxonomy-boundary defect (see docs/implementation/phase-2-report.md §5)"
+            )
+        else:
+            ok(f"{col}: no null/zero discontinuity at the 2023 taxonomy boundary ({gap:+.1%})")
+
+    # Median holdings should evolve smoothly; a step change is the same defect
+    # wearing different clothes.
+    med = q(
+        "SELECT date_part('year', date)::int AS y, "
+        "percentile_cont(0.5) WITHIN GROUP (ORDER BY fii_pct) "
+        "FROM shareholding WHERE date >= '2021-01-01' AND fii_pct IS NOT NULL "
+        "GROUP BY 1 ORDER BY 1"
+    )
+    series = [(int(y), float(v)) for y, v in med if v is not None]
+    jumps = [
+        (a[0], b[0], b[1] - a[1])
+        for a, b in zip(series, series[1:], strict=False)
+        if abs(b[1] - a[1]) > 5.0
+    ]
+    if jumps:
+        for y0, y1, d in jumps:
+            bad(f"median fii_pct jumps {d:+.1f}pp between {y0} and {y1} — suspect the parser")
+    else:
+        ok("median fii_pct evolves smoothly year to year")
+
 conn.close()
 print("\n" + ("=" * 70))
 print("RESULT:", "FAIL — fix the ✗ items before training" if fail else "PASS — database is ready for ML training")
