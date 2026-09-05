@@ -7,6 +7,10 @@ work. It is self-contained: the per-stage design documents in
 [`../implementation/`](../implementation/) carry the specifications and the
 full working, but nothing here depends on having read them.
 
+For the *implementation* narrative of Stages 4–5 and the data pipelines behind
+them — including the two silent data defects and how they were found — see
+[`../implementation/phase-2-report.md`](../implementation/phase-2-report.md).
+
 ---
 
 ## 1. Verdict

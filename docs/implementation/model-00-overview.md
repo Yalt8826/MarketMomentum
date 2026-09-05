@@ -6,6 +6,11 @@ section records what was measured.
 **Read this file first.** It carries the framing, the shared conventions, and
 the inter-stage contracts. The per-stage files are useless without it.
 
+**Phase 2 report: [`phase-2-report.md`](phase-2-report.md)** — the consolidated
+narrative of the reframe from forecasting to detection, both data pipelines,
+Stages 4 and 5, the two silent data defects, and the methodological patterns
+that emerged.
+
 ### Outcomes at a glance
 
 | Stage | Verdict | The number that decides it |
