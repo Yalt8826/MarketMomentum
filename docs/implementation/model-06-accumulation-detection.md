@@ -350,6 +350,44 @@ near-tautological because the labels were already −0.80 correlated by
 construction. Here the two series are independently filed by different holders
 and nothing forces them to oppose.
 
+### 9.5c The time gradient tracks flow, not the calendar — probably
+
+The effect nearly triples between halves (+0.070 → +0.198), which needed
+explaining: a mechanism if detection scales with *how much flow there is to
+detect*, a limitation if it is specific to the 2024–26 market.
+
+**First, the boring explanation is ruled out.** The pre-2023 half is not
+degraded data: `mf_shares` is 0% NULL in both eras, zero-valued on 0.67% versus
+0.03%, and the early accumulation distribution is *narrower* (sd 0.038 vs
+0.055), not wider. Noisier data would widen it.
+
+Per-period IC correlated against period-level covariates, and then against the
+same covariates with **calendar time partialled out** — every covariate here
+trends with time, so the raw correlation cannot separate the two:
+
+| Covariate | Raw | **Partial vs time** |
+|---|---|---|
+| **Gross accumulation** (total \|flow\|) | +0.691 | **+0.369** |
+| Period index (the control) | +0.635 | — |
+| Symbols in the cross-section | +0.634 | +0.231 |
+| Net accumulation | +0.570 | +0.274 |
+| Median OI notional (F&O depth) | +0.549 | **−0.067** |
+| Accumulation dispersion | +0.374 | **−0.040** |
+
+**Gross accumulation is the only covariate that survives**, at +0.369.
+Detection strength tracks how much mutual-fund flow there was that quarter,
+beyond the bare time trend. Two candidate explanations are eliminated: F&O
+market depth collapses to −0.067, so this is not "the futures market got
+bigger", and cross-sectional dispersion collapses to −0.040, so it is not
+simply "more variation to rank".
+
+That is the favourable reading — the signal is not specific to 2024–26, it
+scales with the flow it detects. **But it is underpowered.** At 19 periods with
+one control, +0.369 gives t = 1.59, **p = 0.13**; roughly +0.48 would be needed
+for significance. This is the best available explanation of the gradient, not
+an established one, and it will stay that way until there are more periods —
+which is precisely what monthly mutual-fund data would provide.
+
 ### 9.6 Honest limits
 
 - **The effect is modest.** IC +0.137 ranks symbols weakly. Its consistency —
@@ -368,6 +406,8 @@ and nothing forces them to oppose.
   test that would settle it.
 - **One market, one regime**, 2021–2026, a period of unprecedented Indian
   retail inflow growth. The contrarian DII behaviour may be specific to it.
+  §9.5c gives some reassurance — the gradient tracks flow rather than the
+  calendar — but underpowered reassurance.
 
 ### 9.7 What this means for the project
 
@@ -397,10 +437,10 @@ Items 2 and 3 of the previous list are done (§9.5a, §9.5b). What remains:
    test that would move this from "robust across subsets" to "confirmed
    out-of-sample", and it would give the early-window question the power 13
    quarters cannot. Roughly forty AMC scrapes; see §9.5a.
-2. **Explain the time gradient.** The effect nearly triples between the first
-   and second halves. If it tracks the size of domestic inflows, that is a
-   mechanism; if it tracks something about the 2024–26 market specifically,
-   that is a limitation.
+2. **Confirm the flow-scaling story with more periods.** §9.5c finds gross
+   accumulation is the only covariate surviving a time control (+0.369), but
+   19 periods gives p = 0.13. This is the same bottleneck as item 1 and the
+   same fix.
 3. **Drop `q_fut_direction` from accumulation work**, or rebuild it on the
    delta-adjusted residual the option quadrants already use, so price direction
    is not baked into it (§9.5).

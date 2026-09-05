@@ -651,6 +651,89 @@ def robustness_checks(
     return out
 
 
+def time_gradient(
+    frame: pd.DataFrame, *, feature: str = PREREGISTERED_FEATURE
+) -> dict[str, Any]:
+    """Why does the effect nearly triple between the first and second halves?
+
+    Two readings, with very different consequences. If detection strength
+    tracks **how much flow there is to detect** — more accumulation, more
+    cross-sectional dispersion to rank — the gradient is a property of the
+    mechanism and the signal is stable. If it tracks calendar time and nothing
+    else, the effect is specific to the 2024-26 market and does not generalise.
+
+    Correlates the per-period IC against period-level covariates. With 19
+    periods this is descriptive, not inferential: it can rule a story out or
+    make it plausible, and cannot establish one.
+    """
+    work = frame.copy()
+    work["_momentum"] = work["_window_return"]
+    ic = _period_partial_ic(work, feature, "_momentum")
+    if len(ic) < 8:
+        return {"error": f"only {len(ic)} periods with a computable IC"}
+
+    grouped = work.groupby("period", observed=True)
+    covariates = pd.DataFrame(
+        {
+            # How much is there to detect: the spread of accumulation across
+            # symbols in that period.
+            "accumulation_dispersion": grouped["accumulation"].std(),
+            # How much flow in aggregate, direction ignored.
+            "gross_accumulation": grouped["accumulation"].apply(
+                lambda s: float(s.abs().sum())
+            ),
+            # Net direction: were funds buying the market or selling it?
+            "net_accumulation": grouped["accumulation"].sum(),
+            # Market depth, to separate "more flow" from "bigger F&O market".
+            "median_oi_notional": grouped["_oi_notional"].median(),
+            "symbols": grouped.size(),
+        }
+    )
+    # Elapsed periods, to test the bare calendar-time story on its own terms.
+    covariates["period_index"] = np.arange(len(covariates), dtype="float64")
+
+    aligned = covariates.loc[covariates.index.isin(ic.index)].copy()
+    aligned["ic"] = ic.reindex(aligned.index)
+    aligned = aligned.dropna(subset=["ic"])
+
+    out: dict[str, Any] = {"periods": int(len(aligned)), "correlations": {}}
+    for column in covariates.columns:
+        pair = aligned[[column, "ic"]].dropna()
+        if len(pair) < 8 or pair[column].nunique() < 3:
+            continue
+        ranked = pair.rank(method="average")
+        out["correlations"][column] = float(ranked[column].corr(ranked["ic"]))
+    # Every covariate here trends with time, so a raw correlation cannot tell
+    # "more flow to detect" from "later date". Partialling out the period index
+    # is what separates them: a covariate that survives it carries information
+    # beyond the trend, one that collapses was only ever a proxy for the date.
+    out["partial_vs_time"] = {}
+    for column in covariates.columns:
+        if column == "period_index":
+            continue
+        pair = aligned[[column, "period_index", "ic"]].dropna()
+        if len(pair) < 8 or pair[column].nunique() < 3:
+            continue
+        ranked = pair.rank(method="average")
+        x, z, y = ranked[column], ranked["period_index"], ranked["ic"]
+        rxy, rxz, ryz = x.corr(y), x.corr(z), y.corr(z)
+        if not all(np.isfinite(v) for v in (rxy, rxz, ryz)):
+            continue
+        denominator = np.sqrt((1.0 - rxz**2) * (1.0 - ryz**2))
+        if denominator > 0:
+            out["partial_vs_time"][column] = float((rxy - rxz * ryz) / denominator)
+
+    out["per_period"] = {
+        str(pd.Timestamp(str(idx)).date()): {
+            "ic": float(row["ic"]),
+            "dispersion": float(row["accumulation_dispersion"]),
+            "gross": float(row["gross_accumulation"]),
+        }
+        for idx, row in aligned.iterrows()
+    }
+    return out
+
+
 def counterparty_check(
     conn: Any, *, seed: int = RANDOM_SEED
 ) -> dict[str, Any]:

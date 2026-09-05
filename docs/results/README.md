@@ -477,8 +477,16 @@ periods is few; ~120 cells were examined and the original feature selection was
 not pre-registered; there is **no true out-of-sample test** (subset stability is
 weaker than an independent dataset, and monthly MF portfolios were not
 attempted — ~40 heterogeneous AMC scrapes); and the effect nearly triples
-between the first and second halves, so it may be strengthening with the
-2024–26 domestic-inflow surge rather than being a stable constant.
+between the first and second halves.
+
+**On that gradient:** it is not degraded early data (the pre-2023 half has the
+same NULL rates and a *narrower* accumulation distribution). Correlating
+per-period IC against period covariates with calendar time partialled out,
+**gross mutual-fund flow is the only survivor** (+0.369) — F&O market depth
+collapses to −0.067 and cross-sectional dispersion to −0.040. So detection
+strength appears to scale with how much flow there is to detect, rather than
+being specific to 2024–26. But at 19 periods that partial gives p = 0.13: the
+best available explanation, not an established one.
 
 Design, traps and full results:
 [`model-06-accumulation-detection.md`](../implementation/model-06-accumulation-detection.md).

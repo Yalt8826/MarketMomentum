@@ -332,3 +332,47 @@ def test_size_split_is_within_period() -> None:
     # Both halves of the universe must still see most periods.
     assert out["large_caps"]["periods"] >= 10
     assert out["small_caps"]["periods"] >= 10
+
+
+def test_time_gradient_separates_flow_from_calendar_time() -> None:
+    """Every period-level covariate trends with time; the partial is what sorts them.
+
+    A raw correlation cannot tell "more flow to detect" from "later date". A
+    covariate that drives the IC must survive controlling the period index; one
+    that was only a proxy for the date must collapse.
+    """
+    from mktmtm.ml.accumulation import time_gradient
+
+    rng = np.random.default_rng(11)
+    rows = []
+    periods = pd.date_range("2022-03-31", periods=16, freq="QE")
+    for p_i, period in enumerate(periods):
+        # Flow strength rises with time, but noisily, so the two are separable.
+        strength = 0.3 + 0.1 * p_i + rng.normal(scale=0.6)
+        for s_i in range(80):
+            basis = rng.normal()
+            rows.append(
+                {
+                    "symbol": f"S{s_i:03d}",
+                    "date": period,
+                    "period": period,
+                    "basis_excess_mean": basis,
+                    "_window_return": rng.normal(),
+                    "_oi_notional": 1e8,
+                    # Detection is easy when `strength` is high.
+                    "accumulation": strength * basis + rng.normal(scale=1.0),
+                }
+            )
+    out = time_gradient(pd.DataFrame(rows))
+    assert out["periods"] == 16
+    # Gross flow drives the IC by construction and must survive the control;
+    # a constant covariate (market depth) must not appear as a driver.
+    assert out["partial_vs_time"]["gross_accumulation"] > 0.2
+    assert abs(out["partial_vs_time"].get("median_oi_notional", 0.0)) < 0.4
+
+
+def test_time_gradient_needs_enough_periods() -> None:
+    from mktmtm.ml.accumulation import time_gradient
+
+    tiny = _robustness_frame(effect=1.0, n_periods=4, n_symbols=40)
+    assert "error" in time_gradient(tiny)
