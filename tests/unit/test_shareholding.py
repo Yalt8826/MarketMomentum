@@ -164,3 +164,82 @@ def test_columns_mirror_the_ddl() -> None:
         if (m := re.match(r"\s{4}(\w+)\s+(?:VARCHAR|DATE|BIGINT|DOUBLE)", line))
     ]
     assert declared == list(SHAREHOLDING_COLUMNS)
+
+
+def _old_taxonomy_xbrl() -> str:
+    """A pre-2023 filing: different member names, different casing, no domestic total.
+
+    Matching only the modern names left every 2018-2022 filing with a NULL FII
+    holding (899 rows), and the UTI/Uti casing drift alone made mutual funds
+    74.6% NULL.
+    """
+    members = {
+        "ForeignInstitutionsMember": 200_000,      # foreign total, old name
+        "InstitutionsMember": 500_000,             # ALL institutions
+        "MutualFundsOrUtiMember": 120_000,         # note the casing
+        "InsuranceCompaniesMember": 80_000,
+    }
+    contexts, facts = [], []
+    for member, count in members.items():
+        cid = f"{member}_ctx"
+        contexts.append(
+            f'<xbrli:context id="{cid}">'
+            f"<xbrldi:explicitMember>in-bse-shp:{member}</xbrldi:explicitMember>"
+            f"</xbrli:context>"
+        )
+        facts.append(
+            f'<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="{cid}">'
+            f"{count}</in-bse-shp:NumberOfFullyPaidUpEquityShares>"
+        )
+        facts.append(
+            f'<in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares '
+            f'contextRef="{cid}">{count / 1_000_000}'
+            f"</in-bse-shp:ShareholdingAsAPercentageOfTotalNumberOfShares>"
+        )
+    return "<xbrl>" + "".join(contexts) + "".join(facts) + "</xbrl>"
+
+
+def test_pre_2023_taxonomy_member_names_are_recognised() -> None:
+    out = parse_shareholding(_old_taxonomy_xbrl())
+    assert out["fii_shares"] == 200_000
+
+
+def test_member_matching_is_case_insensitive() -> None:
+    """MutualFundsOrUTIMember vs MutualFundsOrUtiMember across versions."""
+    out = parse_shareholding(_old_taxonomy_xbrl())
+    assert out["mf_shares"] == 120_000
+
+
+def test_domestic_is_recovered_as_institutions_minus_foreign() -> None:
+    """Old filings carry no domestic total; subtracting is exact, not approximate."""
+    out = parse_shareholding(_old_taxonomy_xbrl())
+    assert out["dii_shares"] == 300_000  # 500,000 total - 200,000 foreign
+    assert out["dii_pct"] == pytest.approx(30.0)
+
+
+def test_a_total_member_is_preferred_over_a_subset() -> None:
+    """A filing carrying both must not record only its FPI slice as the whole."""
+    xml = _old_taxonomy_xbrl().replace(
+        "</xbrl>",
+        '<xbrli:context id="sub">'
+        "<xbrldi:explicitMember>in-bse-shp:ForeignPortfolioInvestorMember"
+        "</xbrldi:explicitMember></xbrli:context>"
+        '<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="sub">50000'
+        "</in-bse-shp:NumberOfFullyPaidUpEquityShares></xbrl>",
+    )
+    assert parse_shareholding(xml)["fii_shares"] == 200_000
+
+
+def test_domestic_fallback_refuses_a_negative_holding() -> None:
+    """A malformed filing yields NULL, never a negative holding."""
+    xml = _old_taxonomy_xbrl().replace(
+        '<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="InstitutionsMember_ctx">500000',
+        '<in-bse-shp:NumberOfFullyPaidUpEquityShares contextRef="InstitutionsMember_ctx">100000',
+    )
+    assert parse_shareholding(xml)["dii_shares"] is None
+
+
+def test_direct_domestic_member_wins_over_the_fallback() -> None:
+    """The subtraction only applies when the direct member is genuinely absent."""
+    out = parse_shareholding(_xbrl())
+    assert out["dii_shares"] == 300_000

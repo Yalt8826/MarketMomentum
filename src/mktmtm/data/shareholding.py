@@ -40,6 +40,7 @@ import re
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import pandas as pd
 import requests
@@ -80,15 +81,40 @@ _UA = (
     "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
 )
 
-#: XBRL member names -> our column prefixes. `InstitutionsForeignMember` is the
-#: FPI/FII total; `InstitutionsDomesticMember` is mutual funds + insurers +
-#: banks + other financial institutions.
-_MEMBERS = {
-    "InstitutionsForeignMember": "fii",
-    "InstitutionsDomesticMember": "dii",
-    "MutualFundsOrUTIMember": "mf",
-    "InsuranceCompaniesMember": "insurance",
+#: Candidate XBRL member names per logical category, most-preferred first.
+#:
+#: The taxonomy changed around 2023 and the two versions share almost no member
+#: names. Filings before it call the foreign total ``ForeignInstitutionsMember``
+#: and have no domestic total at all; filings after it use
+#: ``InstitutionsForeignMember`` / ``InstitutionsDomesticMember``. Matching only
+#: the newer set left 899 rows (every filing from 2018-2022) with a NULL FII
+#: holding, and the casing drift between ``MutualFundsOrUTIMember`` and
+#: ``MutualFundsOrUtiMember`` alone accounted for a 74.6% NULL rate on mutual
+#: funds. Lookup is case-insensitive for that reason.
+#:
+#: Order matters: a *total* must be preferred over a subset, or a filing that
+#: reports both would silently record only its FPI Category I slice as the
+#: whole foreign holding.
+_MEMBER_ALIASES: dict[str, tuple[str, ...]] = {
+    "fii": (
+        "InstitutionsForeignMember",              # 2023+ taxonomy, total
+        "ForeignInstitutionsMember",              # pre-2023 taxonomy, total
+        "InstitutionsForeignPortfolioInvestorMember",
+        "ForeignPortfolioInvestorMember",         # subsets, last resort
+    ),
+    "dii": (
+        "InstitutionsDomesticMember",             # 2023+ taxonomy
+        "IndianInstitutionsMember",
+    ),
+    "mf": ("MutualFundsOrUTIMember", "MutualFundsMember"),
+    "insurance": ("InsuranceCompaniesMember",),
 }
+
+#: Pre-2023 filings carry a combined institutions total but no domestic one, so
+#: domestic is recovered as ``total - foreign``.
+_ALL_INSTITUTIONS = ("InstitutionsMember",)
+
+_MEMBERS = {aliases[0]: prefix for prefix, aliases in _MEMBER_ALIASES.items()}
 
 _SHARE_TAG = "NumberOfFullyPaidUpEquityShares"
 _PCT_TAG = "ShareholdingAsAPercentageOfTotalNumberOfShares"
@@ -117,14 +143,27 @@ def _contexts(xml: str) -> dict[str, str]:
 
 
 def _facts(xml: str, tag: str, contexts: dict[str, str]) -> dict[str, str]:
-    """Member name -> raw fact value for one XBRL tag."""
+    """Lower-cased member name -> raw fact value for one XBRL tag.
+
+    Keys are lower-cased because the taxonomy is inconsistent about casing
+    across versions (``MutualFundsOrUTIMember`` vs ``MutualFundsOrUtiMember``).
+    """
     out: dict[str, str] = {}
     pattern = rf'<in-bse-shp:{tag}[^>]*contextRef="([^"]+)"[^>]*>([^<]+)<'
     for ctx, value in re.findall(pattern, xml):
         member = contexts.get(ctx)
-        if member and member not in out:
-            out[member] = value
+        if member and member.lower() not in out:
+            out[member.lower()] = value
     return out
+
+
+def _pick(facts: dict[str, str], aliases: tuple[str, ...]) -> str | None:
+    """First alias present in ``facts``, matched case-insensitively."""
+    for name in aliases:
+        value = facts.get(name.lower())
+        if value is not None:
+            return value
+    return None
 
 
 def _number(value: str | None) -> float | None:
@@ -156,8 +195,8 @@ def parse_shareholding(xml: str) -> dict[str, Any]:
         raise ShareholdingError(f"no {_SHARE_TAG} facts found in filing")
 
     raw_pct = {
-        prefix: _number(percents.get(member))
-        for member, prefix in _MEMBERS.items()
+        prefix: _number(_pick(percents, aliases))
+        for prefix, aliases in _MEMBER_ALIASES.items()
     }
     known = [v for v in raw_pct.values() if v is not None]
     # Fractions if nothing exceeds 1.0 and something is non-trivially non-zero.
@@ -165,14 +204,46 @@ def parse_shareholding(xml: str) -> dict[str, Any]:
     scale = 100.0 if as_fraction else 1.0
 
     out: dict[str, Any] = {}
-    for member, prefix in _MEMBERS.items():
-        count = _number(shares.get(member))
+    for prefix, aliases in _MEMBER_ALIASES.items():
+        count = _number(_pick(shares, aliases))
         out[f"{prefix}_shares"] = int(count) if count is not None else None
         pct = raw_pct[prefix]
         out[f"{prefix}_pct"] = pct * scale if pct is not None else None
 
+    _fill_domestic(out, shares, percents, scale)
+
     out["total_shares"] = _derive_total_shares(out)
     return out
+
+
+def _fill_domestic(
+    out: dict[str, Any],
+    shares: dict[str, str],
+    percents: dict[str, str],
+    scale: float,
+) -> None:
+    """Recover the domestic holding as ``all institutions - foreign``, in place.
+
+    Pre-2023 filings report a combined ``InstitutionsMember`` total and a
+    foreign total, but no domestic one. Subtracting is exact rather than an
+    approximation — the taxonomy defines institutions as foreign plus domestic
+    — and it is only applied when the direct member is genuinely absent.
+    """
+    if out.get("dii_shares") is not None:
+        return
+    total_shares = _number(_pick(shares, _ALL_INSTITUTIONS))
+    foreign_shares = out.get("fii_shares")
+    if total_shares is None or foreign_shares is None:
+        return
+    domestic = total_shares - foreign_shares
+    if domestic < 0:
+        return  # a malformed filing; NULL beats a negative holding
+    out["dii_shares"] = int(domestic)
+
+    total_pct = _number(_pick(percents, _ALL_INSTITUTIONS))
+    foreign_pct = out.get("fii_pct")
+    if total_pct is not None and foreign_pct is not None:
+        out["dii_pct"] = max(total_pct * scale - foreign_pct, 0.0)
 
 
 def _derive_total_shares(parsed: dict[str, Any]) -> int | None:
@@ -241,7 +312,9 @@ def fetch_filing_index(session: requests.Session, symbol: str) -> pd.DataFrame:
 
     Returns ``(symbol, date, xbrl_url, record_id, promoter_pct, public_pct)``.
     """
-    url = _MASTER_URL.format(symbol=symbol)
+    # "&" in a symbol (M&M, M&MFIN) would otherwise terminate the query
+    # string and NSE would answer for a different, empty symbol.
+    url = _MASTER_URL.format(symbol=quote(symbol, safe=""))
     try:
         response = session.get(
             url, headers={"Referer": _REFERER, "Accept": "application/json"},
@@ -265,7 +338,7 @@ def fetch_filing_index(session: requests.Session, symbol: str) -> pd.DataFrame:
         # NSE emits "-" for a filing whose XBRL was never published; fetching
         # it yields a 404 on a URL ending in "-", which is noise rather than a
         # failure worth reporting.
-        if stamp is None or not xbrl.lower().startswith("http"):
+        if stamp is None or not xbrl.lower().endswith(".xml"):
             continue
         rows.append(
             {
