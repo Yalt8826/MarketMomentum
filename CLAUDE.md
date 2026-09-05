@@ -147,9 +147,7 @@ modelling stages, with the validity checks that make the negative results credib
 `docs/implementation/model-00-overview.md` (the four-stage
 institutional-flow modelling plan; read it before touching `ml/`. Carries the shared no-lookahead
 conventions and the inter-stage contracts. Stages 1–3 are **built**; each stage file's Results
-section records what was measured, negative results included. Still open: `ml/baselines.py`
-imports the missing `ml/features.py`, which lives on the unmerged `model/xgboost-direction`
-branch, so `build_baselines_table()` raises ImportError),
+section records what was measured, negative results included),
 `docs/implementation/flow-features.md` (outlier-strike + futures-basis features: threshold
 measurements, the OI-units defect, and the per-symbol vs market-level results),
 `docs/data/iv-integrity-audit.md` (price-basis and IV-solver defects + verified fixes),
@@ -157,4 +155,7 @@ measurements, the OI-units defect, and the per-symbol vs market-level results),
 and spot-basis defects, the change set, re-run procedure and acceptance criteria),
 `docs/data/ml-dataset-report.md` (feature analysis, look-ahead incident),
 `docs/database/README.md` (full schema, JSONB shapes, write paths),
+`docs/models/xgboost-direction-model-card.md` (the project's superseded first approach —
+supervised per-symbol price direction; its code is at the git tag `archive/xgboost-direction`
+and **must not be merged**, it predates several measured pipeline fixes),
 `docs/backtest/` (strategy design), `docs/reference/` (NSE formula PDF).
