@@ -110,33 +110,33 @@ reports AUC 0.85 has a leak; find it before celebrating.
 | `features/flow.py` | `detect_outlier_strikes`, `futures_basis`, `build_flow_features`, `write_flow_features`, `export_flow_parquet`, `run_flow_features`, `load_spot_frame` | Row-group streaming over the bhavcopy cache; `_robust_scale` conventions. |
 | `data/participant_oi.py` | `add_net_positions(df)` | Derives `net_*` levels and `d_net_*` flows. **This produces the Stage 1 label.** |
 
-### Defect to fix before Stage 1
+### Resolved: the dangling baselines import
 
-`src/mktmtm/ml/baselines.py:116` does:
+`ml/baselines.py` used to do `from mktmtm.ml.features import load_training_frame`
+inside `build_baselines_table`. That module was never merged onto this branch,
+so the call raised `ImportError` — and because the import sat inside a function
+body it never fired during collection, letting the whole test suite pass while
+the entry point was dead.
 
-```python
-from mktmtm.ml.features import load_training_frame  # Phase 2 loader
-```
+**Fixed in `61e7773`:** `build_baselines_table` and `main` were removed. The
+four pure scoring functions never depended on the loader and remain. The
+market-level equivalent is `ml.market_flow.score_static_baselines`.
 
-**`src/mktmtm/ml/features.py` does not exist on this branch.** Calling
-`build_baselines_table()` raises `ImportError` today. The module lives on the
-unmerged branch `model/xgboost-direction`, which also carries
-`train_direction.py`, `audit_direction.py` and `promote.py`.
-
-Inspect it before writing any loader of your own:
+The unmerged branch that held `features.py` was archived and deleted in
+`61e7773`; its code is at the git tag `archive/xgboost-direction`:
 
 ```bash
-git show model/xgboost-direction:src/mktmtm/ml/features.py
-git show model/xgboost-direction:src/mktmtm/ml/train_direction.py
+git show archive/xgboost-direction:src/mktmtm/ml/features.py
+git checkout archive/xgboost-direction -- <path>    # to restore a file
 ```
 
-It already solves problems Stage 1 will hit — a pinned feature contract, a
-quality gate (`GATE`), missingness indicators, rank normalization, and a null-rate
-threshold. **Port the patterns; do not merge the branch wholesale** (it is built
-for the per-symbol direction task, which is the price-prediction proxy this plan
-is moving away from). Either restore a `features.py` that serves both, or give
-Stage 1 its own loader and leave a comment in `baselines.py` recording that its
-import is broken until the branch is reconciled.
+**That tag must never be merged.** It was cut from `main` at `e13e4b9` and
+predates the OPEN_INT-in-shares fix, the gex parquet re-export and all of
+`flow_features`; merging would revert measured bug fixes. Its `features.py` is
+still worth reading before writing any loader — a pinned feature contract, a
+quality gate, missingness indicators and rank normalization — but port the
+patterns rather than the file. The superseded approach is documented in
+[`../models/xgboost-direction-model-card.md`](../models/xgboost-direction-model-card.md).
 
 ### Dependencies
 
