@@ -15,6 +15,9 @@ the inter-stage contracts. The per-stage files are useless without it.
 | 2 — regime HMM | **Negative.** No persistent discrete regimes. | Min transition diagonal **never exceeds 0.5 at any k** (0.367 → 0.072); BIC never turns around. |
 | 3 — attribution | **Mixed, leaning negative.** Decomposes but does not identify. | Placebo passes (R² 0.45 vs −0.01) but earnings corroboration **fails**: shuffled labels cluster around earnings *more* than real ones for 2 of 3 participants. |
 
+**Full results report: [`../results/README.md`](../results/README.md)** — consolidated
+across all four stages, with methodology, limitations and reproduction steps.
+
 Three of four are negative or null. That is the honest state of the work, and
 the write-up should lead with it rather than with the one stage that produced a
 usable feature. The pipeline is demonstrably capable of detecting signal when

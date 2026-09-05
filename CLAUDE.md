@@ -142,6 +142,8 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+`docs/results/README.md` (**start here for outcomes** — consolidated results across all four
+modelling stages, with the validity checks that make the negative results credible),
 `docs/implementation/model-00-overview.md` (the four-stage
 institutional-flow modelling plan; read it before touching `ml/`. Carries the shared no-lookahead
 conventions and the inter-stage contracts. Stages 1–3 are **built**; each stage file's Results
