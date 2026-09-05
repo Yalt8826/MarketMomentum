@@ -59,8 +59,44 @@ CREATE TABLE IF NOT EXISTS flow_features (
     fut_roll_ratio            DOUBLE PRECISION,  -- next_oi / (near_oi + next_oi)
     fut_roll_spread           DOUBLE PRECISION,  -- (next - near) / near
 
+    -- ── buildup quadrants (direction) ─────────────────────────────────────
+    -- OI change crossed with price change, which is what gives the families
+    -- above a direction. Futures: the four classic cases over every expiry.
+    -- Options: a rising premium with rising OI is buyer-driven, a falling one
+    -- writer-driven; writers are the institutional side far more often, since
+    -- writing needs margin. Computed only on contracts that actually traded
+    -- (CONTRACTS > 0) — on an untraded strike SETTLE_PR is a theoretical mark
+    -- and the "premium change" between two such marks is model noise.
+    q_long_buildup_notional   DOUBLE PRECISION,  -- price up,   OI up   (bullish)
+    q_short_buildup_notional  DOUBLE PRECISION,  -- price down, OI up   (bearish)
+    q_short_cover_notional    DOUBLE PRECISION,  -- price up,   OI down (bullish)
+    q_long_unwind_notional    DOUBLE PRECISION,  -- price down, OI down (bearish)
+    q_fut_direction           DOUBLE PRECISION,  -- (bull - bear) / total, [-1, 1]
+    ce_writer_frac            DOUBLE PRECISION,  -- writer share of new CE interest
+    pe_writer_frac            DOUBLE PRECISION,  -- writer share of new PE interest
+    opt_direction             DOUBLE PRECISION,  -- calls bought + puts written = bullish
+    oi_outlier_writer_frac    DOUBLE PRECISION,  -- the same, flagged strikes only
+    oi_outlier_direction      DOUBLE PRECISION,  -- the outlier detector's direction
+
     PRIMARY KEY (symbol, date)
 );
+
+-- Migration for databases created before the quadrant family existed. The
+-- CREATE above covers a fresh bootstrap; this covers an existing install.
+-- Both are idempotent, and they must stay in sync — FLOW_COLUMNS in
+-- features/flow.py is the source of truth and test_flow_columns_mirror_the_ddl
+-- parses this file to enforce it.
+ALTER TABLE flow_features
+    ADD COLUMN IF NOT EXISTS q_long_buildup_notional  DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS q_short_buildup_notional DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS q_short_cover_notional   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS q_long_unwind_notional   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS q_fut_direction          DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS ce_writer_frac           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS pe_writer_frac           DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS opt_direction            DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS oi_outlier_writer_frac   DOUBLE PRECISION,
+    ADD COLUMN IF NOT EXISTS oi_outlier_direction     DOUBLE PRECISION;
 
 -- Cross-sectional access (all symbols on one date) is the shape every rank-IC
 -- and HMM-fitting query uses; the primary key already covers the per-symbol

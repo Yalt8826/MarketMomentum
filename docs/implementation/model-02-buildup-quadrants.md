@@ -253,17 +253,92 @@ join is not on the dictionary-encoded key.
 
 ## 7. Results
 
-*To be filled in by the implementer.* Report at minimum:
+**Built 2026-09-05.** All ten columns are live in `flow_features`; row count is
+unchanged at **212,441**, joining `ml_dataset` 1:1. Full build now takes
+**6m44s** (was 2m01s before quadrants; the delta lookup below is most of the
+increase).
 
-1. Distribution of `q_fut_direction` and `oi_outlier_direction`, and their
-   non-null rates.
-2. **The raw-vs-delta-adjusted disagreement rate on flagged strikes**, and the
-   resulting decision about which column survives.
-3. Correlation of the new direction scores against `participant_oi` flows at
-   market level, differenced, with the expiry-calendar control applied — the
-   same protocol used for the existing flow features. The structural check is
-   that `Client` moves opposite to `FII`/`Pro`.
-4. Whether `oi_outlier_direction` beats the directionless
-   `oi_outlier_build_notional` at anything. If it does not, that is a real
-   finding and it means Stage 2's observable set needs rethinking before the
-   HMM is built.
+### 7.1 The delta adjustment is required, not optional
+
+`scripts/measure_delta_adjustment.py`, over **163,383 traded contracts** on 47
+sampled days spread across the five years:
+
+| Measure | Value |
+|---|---|
+| Disagreement rate, raw vs delta-adjusted | **35.8%** |
+| Disagreement rate, notional-weighted | **36.9%** |
+| Median \|raw premium move\| | 4.20 |
+| Median \|delta x spot move\| | 3.12 |
+| Writer share, raw | 63.4% |
+| Writer share, adjusted | 61.0% |
+
+The confound is as large as the signal: the median move explained by the
+underlying alone (3.12) is comparable to the median premium move itself
+(4.20), and the two readings put **more than a third of contracts on opposite
+sides**. Classifying on the raw premium change would have been wrong about a
+third of the time, in a way that no aggregate check would have caught — the
+writer share barely moves (63.4% vs 61.0%) even though the individual
+assignments differ wildly.
+
+**Decision: the delta-adjusted residual is what ships.** §2's staged plan had
+the raw pass as primary with the adjusted one as validation; the measurement
+reversed that. `option_quadrants` now classifies on
+
+```
+(mark - mark_prev) - delta_prev * (spot - spot_prev)
+```
+
+and **drops** contracts with no `delta_prev` rather than falling back to the
+raw change — a third-wrong reading is not a usable fallback. Per-strike delta
+comes from `option_metrics.option_chain` via `_load_day_delta`, fetched one day
+at a time inside the existing row-group stream (~0.15 s per date).
+
+### 7.2 A latent defect this stage exposed
+
+The bhavcopy cache's row groups are one per trade date but are **not stored in
+chronological order** — the frame is sorted by symbol, so the groups come out
+with **293 backward steps** over the five years. The first implementation
+streamed them in file order and treated the previous group as "yesterday",
+which silently joined each day against an arbitrary other day.
+
+Nothing failed. The same contract exists on both days, so the merge succeeded
+and returned a price change spanning months. It surfaced only as a coverage
+discontinuity — `opt_direction` non-null on 6.2% of 2023 rows but 99.0% of
+2025 rows — which initially looked like the UDiFF schema cutoff (2024-07-08)
+and was not.
+
+The outlier detector never noticed because it is purely within-day; the
+quadrants are the first thing here that needs an actual yesterday. Fixed in
+`_ordered_row_groups`, pinned by `test_row_groups_stream_in_trade_date_order`.
+
+### 7.3 Coverage and distributions
+
+| Year | Rows | `q_fut_direction` | `opt_direction` | `oi_outlier_direction` | mean `opt_direction` | mean `ce_writer_frac` |
+|---|---|---|---|---|---|---|
+| 2021 | 15,216 | 98.9% | 97.2% | 9.0% | −0.089 | 0.646 |
+| 2022 | 38,672 | 100.0% | 99.5% | 9.2% | −0.085 | 0.657 |
+| 2023 | 38,281 | 100.0% | 98.9% | 11.5% | −0.106 | 0.673 |
+| 2024 | 39,842 | 99.9% | 97.3% | 10.9% | −0.098 | 0.650 |
+| 2025 | 50,666 | 100.0% | 99.0% | 10.2% | −0.081 | 0.654 |
+| 2026 | 29,764 | 100.0% | 99.8% | 15.1% | −0.067 | 0.621 |
+
+Coverage is flat across the five years — the check that matters, since F&O
+liquidity grew several-fold over the window and a drifting rate would mean the
+feature was tracking volume. `oi_outlier_direction`'s rate tracks the flagged
+rate by construction. All direction scores lie within [−1, 1].
+
+`ce_writer_frac` sits near **0.65** and `pe_writer_frac` near **0.62** in every
+year: writers take the majority of newly opened option interest on both sides
+of the chain, consistently, which is the expected structural fact (writing
+needs margin, so it skews institutional). `opt_direction` is mildly negative
+throughout — the market's newly opened option interest leans bearish on
+average, which is what a persistent call-writing/covered-call bias looks like.
+
+### 7.4 Not yet done
+
+The §4 acceptance item "correlation of the new direction scores against
+`participant_oi` flows at market level" is **not** measured here. It is the
+same protocol Stage 1 runs, on the same aggregates, so it is folded into
+[Stage 1](model-01-market-flow.md) rather than duplicated — see its results
+section for whether `opt_direction` and `oi_outlier_direction` carry anything
+the directionless columns did not.

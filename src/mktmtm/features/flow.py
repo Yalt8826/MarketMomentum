@@ -56,6 +56,8 @@ __all__ = [
     "detect_outlier_strikes",
     "export_flow_parquet",
     "futures_basis",
+    "futures_quadrants",
+    "option_quadrants",
     "run_flow_features",
     "write_flow_features",
 ]
@@ -132,10 +134,43 @@ _FUTURES_COLUMNS = (
     "fut_roll_spread",
 )
 
+# ── buildup quadrants (direction) ───────────────────────────────────────────
+# Open-interest change crossed with price change. An OI build alone cannot
+# tell a buyer from a writer — the defect this family exists to fix, recorded
+# in init_flow_features.sql's header when the outlier detector was built.
+#
+# For a futures contract the four cases are the standard OI reading; for an
+# option the price is the premium, so a rising premium with rising OI is
+# buyer-driven and a falling premium with rising OI is writer-driven. Writers
+# are the institutional side far more often than the retail side, since option
+# writing needs margin.
+_FUT_QUADRANT_COLUMNS = (
+    "q_long_buildup_notional",
+    "q_short_buildup_notional",
+    "q_short_cover_notional",
+    "q_long_unwind_notional",
+    "q_fut_direction",
+)
+
+_QUADRANT_COLUMNS = (
+    "q_long_buildup_notional",
+    "q_short_buildup_notional",
+    "q_short_cover_notional",
+    "q_long_unwind_notional",
+    "q_fut_direction",
+    "ce_writer_frac",
+    "pe_writer_frac",
+    "opt_direction",
+    "oi_outlier_writer_frac",
+    "oi_outlier_direction",
+)
+
 #: Column identity *and* order for ``flow_features``; ``init_flow_features.sql``
 #: mirrors this, the same contract ``DATASET_COLUMNS`` has with
 #: ``init_ml_dataset.sql``. Adding a feature means editing both.
-FLOW_COLUMNS = ("symbol", "date", *_OUTLIER_COLUMNS, *_FUTURES_COLUMNS)
+FLOW_COLUMNS = (
+    "symbol", "date", *_OUTLIER_COLUMNS, *_FUTURES_COLUMNS, *_QUADRANT_COLUMNS,
+)
 
 _INT_COLUMNS = frozenset(
     {"oi_outlier_count", "fut_dte", "fut_oi", "fut_oi_chg", "fut_volume"}
@@ -223,6 +258,13 @@ def detect_outlier_strikes(
     :func:`build_flow_features` turns into notional. Ratio columns are NaN, not
     0, on a day with nothing flagged: no outliers means the call share and mean
     moneyness are undefined, and writing 0 there would be a sentinel.
+
+    When ``options`` also carries ``mark`` / ``mark_prev`` / ``CONTRACTS``, the
+    flagged strikes additionally get ``oi_outlier_writer_frac`` and
+    ``oi_outlier_direction`` — the buildup quadrant restricted to the outliers,
+    which is what turns "somebody opened Rs 400 crore here" into "somebody took
+    a bullish/bearish position here". Without those columns both stay NaN and
+    the rest of the output is unchanged.
     """
     required = {
         "SYMBOL", "DATE", "EXPIRY_DT", "STRIKE_PR", "OPTION_TYP", "CHG_IN_OI", "spot",
@@ -297,6 +339,7 @@ def detect_outlier_strikes(
     ).dt.days.astype("float64")
     flagged["_build"] = flagged["chg_oi"].clip(lower=0.0)
     flagged["_unwind"] = (-flagged["chg_oi"]).clip(lower=0.0)
+    _attach_outlier_quadrant(flagged)
 
     agg = flagged.groupby(["SYMBOL", "DATE"], as_index=False).agg(
         oi_outlier_count=("chg_oi", "size"),
@@ -307,6 +350,10 @@ def detect_outlier_strikes(
         _w_dte=("_w_dte", "sum"),
         _build_contracts=("_build", "sum"),
         _unwind_contracts=("_unwind", "sum"),
+        _out_writer=("_out_writer", "sum"),
+        _out_buyer=("_out_buyer", "sum"),
+        _out_bull=("_out_bull", "sum"),
+        _out_bear=("_out_bear", "sum"),
     ).rename(columns={"SYMBOL": "symbol", "DATE": "date"})
 
     out = seen.merge(agg, on=["symbol", "date"], how="left")
@@ -321,8 +368,56 @@ def detect_outlier_strikes(
     out["oi_outlier_share"] = out["_flagged_abs"] / out["_day_abs"].where(
         out["_day_abs"] > 0
     )
+
+    traded = out["_out_writer"] + out["_out_buyer"]
+    out["oi_outlier_writer_frac"] = out["_out_writer"] / traded.where(traded > 0)
+    out["oi_outlier_direction"] = _direction_score(out["_out_bull"], out["_out_bear"])
     return out.drop(
-        columns=["_day_abs", "_flagged_abs", "_w_call", "_w_money", "_w_dte"]
+        columns=[
+            "_day_abs", "_flagged_abs", "_w_call", "_w_money", "_w_dte",
+            "_out_writer", "_out_buyer", "_out_bull", "_out_bear",
+        ]
+    )
+
+
+def _attach_outlier_quadrant(flagged: pd.DataFrame) -> None:
+    """Add the writer/buyer and bull/bear notional splits to the flagged frame, in place.
+
+    Restricted to flagged strikes that actually *opened* interest on a day they
+    actually traded — the same two gates :func:`option_quadrants` applies, for
+    the same reasons. When the caller supplied no previous-day mark every
+    bucket is 0.0, which sums to a zero denominator and so surfaces as NaN, not
+    as a spurious neutral reading.
+    """
+    zero = pd.Series(0.0, index=flagged.index)
+    have_mark = {"mark", "mark_prev", "CONTRACTS"} <= set(flagged.columns)
+    if not have_mark:
+        for col in ("_out_writer", "_out_buyer", "_out_bull", "_out_bear"):
+            flagged[col] = zero
+        return
+
+    d_prem = _premium_residual(flagged)
+    usable = (
+        (flagged["CONTRACTS"].fillna(0) > 0)
+        & (flagged["chg_oi"] > 0)
+        & flagged["mark"].notna()
+        & flagged["mark_prev"].notna()
+        & d_prem.notna()
+    )
+    notional = flagged["chg_oi"].astype("float64") * flagged["spot"].astype("float64")
+    is_call = flagged["OPTION_TYP"].astype(str) == "CE"
+    writer = usable & (d_prem < 0)
+    buyer = usable & (d_prem > 0)
+
+    flagged["_out_writer"] = notional.where(writer, 0.0)
+    flagged["_out_buyer"] = notional.where(buyer, 0.0)
+    # Calls bought and puts written are bullish; puts bought and calls
+    # written are bearish.
+    flagged["_out_bull"] = notional.where(
+        (is_call & buyer) | (~is_call & writer), 0.0
+    )
+    flagged["_out_bear"] = notional.where(
+        (~is_call & buyer) | (is_call & writer), 0.0
     )
 
 
@@ -344,6 +439,8 @@ def _no_outliers_frame(seen: pd.DataFrame) -> pd.DataFrame:
     out["oi_outlier_dte"] = np.nan
     out["_build_contracts"] = 0.0
     out["_unwind_contracts"] = 0.0
+    out["oi_outlier_writer_frac"] = np.nan
+    out["oi_outlier_direction"] = np.nan
     return out
 
 
@@ -356,6 +453,7 @@ def _empty_outlier_frame() -> pd.DataFrame:
         "symbol", "date",
         *[c for c in _OUTLIER_COLUMNS if not c.endswith("_notional")],
         "_build_contracts", "_unwind_contracts",
+        "oi_outlier_writer_frac", "oi_outlier_direction",
     ]
     return pd.DataFrame(columns=cols)
 
@@ -437,12 +535,259 @@ def futures_basis(futures: pd.DataFrame) -> pd.DataFrame:
     return out[keep]
 
 
+# ═════════════════════════ buildup quadrants ═══════════════════════════════
+
+
+def _mark(frame: pd.DataFrame) -> pd.Series:
+    """``SETTLE_PR`` with a ``CLOSE`` fallback — the same rule as :func:`futures_basis`.
+
+    Settlement is the official daily mark and is defined even on a day the
+    contract did not trade; ``CLOSE`` is then a stale last-traded price. Both
+    quadrant families use this so the two stay comparable.
+    """
+    settle = frame["SETTLE_PR"]
+    return settle.where(settle.notna() & (settle > 0), frame["CLOSE"])
+
+
+def _empty_keyed_frame(value_columns: list[str]) -> pd.DataFrame:
+    """A no-row frame whose merge keys already carry the right dtypes.
+
+    ``pd.DataFrame(columns=[...])`` types every column ``object``. Under pandas
+    3.0 an empty frame's dtypes participate in ``concat`` dtype resolution, so
+    a single quiet day would turn a whole concatenated ``date`` column into
+    ``object`` and the downstream merge would then fail with "trying to merge
+    on datetime64[us] and object columns" — 3.5 minutes into the build.
+    """
+    frame = pd.DataFrame(
+        {
+            "symbol": pd.Series(dtype="object"),
+            "date": pd.Series(dtype="datetime64[us]"),
+            **{c: pd.Series(dtype="float64") for c in value_columns},
+        }
+    )
+    return frame
+
+
+def _align_keys(frame: pd.DataFrame) -> pd.DataFrame:
+    """Coerce ``(symbol, date)`` to the dtypes every merge in this module assumes.
+
+    Cheap insurance at each join rather than a rule every producer has to
+    remember: the frames being merged arrive from a parquet reader, a psycopg2
+    cursor and several groupby paths, and they do not all agree on datetime
+    resolution.
+    """
+    if frame.empty or "date" not in frame.columns:
+        return frame
+    out = frame.copy()
+    out["symbol"] = out["symbol"].astype(str)
+    out["date"] = pd.to_datetime(out["date"]).astype("datetime64[us]")
+    return out
+
+
+def _direction_score(bull: pd.Series, bear: pd.Series) -> pd.Series:
+    """``(bull - bear) / (bull + bear)`` in [-1, 1], NaN when nothing was traded.
+
+    NaN rather than 0.0 on a zero denominator: a symbol-day with no traded
+    open-interest change is *unmeasured*, not *neutral*. The two average to
+    opposite conclusions, which is exactly the sentinel defect recorded in
+    docs/data/iv-integrity-audit.md.
+    """
+    total = bull + bear
+    return ((bull - bear) / total.where(total > 0)).astype("float64")
+
+
+def _premium_residual(frame: pd.DataFrame) -> pd.Series:
+    """Premium change with the underlying's own move removed.
+
+    ``(mark - mark_prev) - delta_prev * (spot - spot_prev)``. Returns NaN where
+    the delta or the previous spot is unavailable, so the caller drops those
+    contracts instead of silently classifying them on the raw change — which
+    is wrong about a third of the time (see :func:`option_quadrants`).
+    """
+    raw = frame["mark"].astype("float64") - frame["mark_prev"].astype("float64")
+    if "delta_prev" not in frame.columns or "spot_prev" not in frame.columns:
+        return pd.Series(np.nan, index=frame.index, dtype="float64")
+    explained = frame["delta_prev"].astype("float64") * (
+        frame["spot"].astype("float64") - frame["spot_prev"].astype("float64")
+    )
+    return raw - explained
+
+
+def option_quadrants(options: pd.DataFrame) -> pd.DataFrame:
+    """Writer-vs-buyer split of newly opened option interest, per symbol-day.
+
+    ``options`` needs ``SYMBOL, DATE, OPTION_TYP, CHG_IN_OI, CONTRACTS, spot``
+    and ``mark`` / ``mark_prev`` (previous *trading* day's mark for the same
+    contract). ``delta_prev`` / ``spot_prev`` are optional but strongly
+    recommended — see the delta confound below. Pure — no I/O.
+
+    Only contracts with ``CHG_IN_OI > 0`` count: the question is who opened
+    the new interest, and a close-out tells us nothing about a fresh view.
+    Only contracts with ``CONTRACTS > 0`` count either — on an untraded strike
+    ``SETTLE_PR`` is a theoretical value, so a "premium change" between two
+    consecutive theoretical settles is model noise, and giving it a quadrant
+    would manufacture signal out of arithmetic. The same traded-only rule is
+    what :func:`_robust_scale` already applies to the z-score.
+
+    **The delta confound.** A call premium rises when the underlying rises,
+    with or without an aggressive buyer, so the raw premium change is not a
+    clean read on buyer-versus-writer pressure. When ``delta_prev`` and
+    ``spot_prev`` are supplied the classification runs on the residual
+
+        ``(mark - mark_prev) - delta_prev * (spot - spot_prev)``
+
+    which strips the move the underlying alone explains. This is not a
+    refinement: measured over 163,383 traded contracts on 47 sampled days, the
+    raw and adjusted readings disagree on **35.8%** of contracts (36.9%
+    notional-weighted), and the median |delta term| (3.12) is comparable to the
+    median |raw move| (4.20). Classifying on the raw change gets the direction
+    wrong roughly a third of the time. See
+    ``scripts/measure_delta_adjustment.py`` and
+    ``docs/implementation/model-02-buildup-quadrants.md``.
+
+    Contracts with no ``delta_prev`` are dropped rather than falling back to
+    the raw change — a third-wrong reading is not a usable fallback.
+
+    Call buying and put writing are bullish; put buying and call writing are
+    bearish. A sign transposition here is invisible in aggregate — every
+    downstream number stays plausible while meaning the reverse — so it is
+    pinned by ``test_call_writing_and_put_writing_have_opposite_signs``.
+    """
+    required = {
+        "SYMBOL", "DATE", "OPTION_TYP", "CHG_IN_OI", "CONTRACTS", "spot",
+        "mark", "mark_prev",
+    }
+    missing = required - set(options.columns)
+    if missing:
+        raise ValueError(f"option_quadrants missing columns: {sorted(missing)}")
+
+    work = options.loc[
+        (options["CONTRACTS"].fillna(0) > 0)
+        & (options["CHG_IN_OI"].fillna(0) > 0)
+        & options["mark_prev"].notna()
+        & options["mark"].notna()
+        & options["spot"].notna()
+        & (options["spot"] > 0)
+    ].copy()
+    if work.empty:
+        return _empty_keyed_frame(
+            ["ce_writer_frac", "pe_writer_frac", "opt_direction"]
+        )
+
+    d_prem = _premium_residual(work)
+    work = work.loc[d_prem.notna()]
+    d_prem = d_prem.loc[work.index]
+    if work.empty:
+        return _empty_keyed_frame(
+            ["ce_writer_frac", "pe_writer_frac", "opt_direction"]
+        )
+    notional = work["CHG_IN_OI"].astype("float64") * work["spot"].astype("float64")
+    is_call = work["OPTION_TYP"].astype(str) == "CE"
+    # A flat premium is neither side pressing; it contributes to no bucket.
+    writer = d_prem < 0
+    buyer = d_prem > 0
+
+    work["_ce_writer"] = notional.where(is_call & writer, 0.0)
+    work["_ce_buyer"] = notional.where(is_call & buyer, 0.0)
+    work["_pe_writer"] = notional.where(~is_call & writer, 0.0)
+    work["_pe_buyer"] = notional.where(~is_call & buyer, 0.0)
+
+    agg = work.groupby(["SYMBOL", "DATE"], as_index=False)[
+        ["_ce_writer", "_ce_buyer", "_pe_writer", "_pe_buyer"]
+    ].sum().rename(columns={"SYMBOL": "symbol", "DATE": "date"})
+
+    ce_total = agg["_ce_writer"] + agg["_ce_buyer"]
+    pe_total = agg["_pe_writer"] + agg["_pe_buyer"]
+    agg["ce_writer_frac"] = agg["_ce_writer"] / ce_total.where(ce_total > 0)
+    agg["pe_writer_frac"] = agg["_pe_writer"] / pe_total.where(pe_total > 0)
+    agg["opt_direction"] = _direction_score(
+        agg["_ce_buyer"] + agg["_pe_writer"],
+        agg["_pe_buyer"] + agg["_ce_writer"],
+    )
+    return agg[["symbol", "date", "ce_writer_frac", "pe_writer_frac", "opt_direction"]]
+
+
+def futures_quadrants(futures: pd.DataFrame) -> pd.DataFrame:
+    """The four classic OI-vs-price quadrants over all futures contracts, per symbol-day.
+
+    ``futures`` needs ``SYMBOL, DATE, EXPIRY_DT, SETTLE_PR, CLOSE, CHG_IN_OI,
+    CONTRACTS, spot`` — one row per futures contract, any number of dates.
+    Pure — no I/O.
+
+    Unlike :func:`futures_basis` this spans *every* expiry, not just the near
+    month: a roll shows up as an unwind in the near contract and a buildup in
+    the next, and netting them at the symbol level is the point.
+
+    The previous mark comes from a ``groupby(SYMBOL, EXPIRY_DT).shift(1)``,
+    which is the previous *trading* day for that contract — several calendar
+    days back across a weekend, which is the right comparison. Row order is
+    load-bearing: the sort before the shift is not cosmetic.
+    """
+    required = {
+        "SYMBOL", "DATE", "EXPIRY_DT", "SETTLE_PR", "CLOSE", "CHG_IN_OI",
+        "CONTRACTS", "spot",
+    }
+    missing = required - set(futures.columns)
+    if missing:
+        raise ValueError(f"futures_quadrants missing columns: {sorted(missing)}")
+
+    work = futures.copy()
+    work["DATE"] = pd.to_datetime(work["DATE"], errors="coerce")
+    work["mark"] = _mark(work)
+    work = work.loc[work["DATE"].notna() & work["mark"].notna() & (work["mark"] > 0)]
+    if work.empty:
+        return _empty_keyed_frame(list(_FUT_QUADRANT_COLUMNS))
+
+    work = work.sort_values(["SYMBOL", "EXPIRY_DT", "DATE"], kind="stable")
+    work["mark_prev"] = work.groupby(
+        ["SYMBOL", "EXPIRY_DT"], observed=True, sort=False
+    )["mark"].shift(1)
+
+    work = work.loc[
+        (work["CONTRACTS"].fillna(0) > 0)
+        & work["mark_prev"].notna()
+        & work["spot"].notna()
+        & (work["spot"] > 0)
+        & work["CHG_IN_OI"].notna()
+    ]
+    if work.empty:
+        return _empty_keyed_frame(list(_FUT_QUADRANT_COLUMNS))
+
+    d_price = work["mark"].astype("float64") - work["mark_prev"].astype("float64")
+    chg_oi = work["CHG_IN_OI"].astype("float64")
+    notional = chg_oi.abs() * work["spot"].astype("float64")
+    up, down = d_price > 0, d_price < 0
+    opened, closed = chg_oi > 0, chg_oi < 0
+
+    work["q_long_buildup_notional"] = notional.where(up & opened, 0.0)
+    work["q_short_buildup_notional"] = notional.where(down & opened, 0.0)
+    work["q_short_cover_notional"] = notional.where(up & closed, 0.0)
+    work["q_long_unwind_notional"] = notional.where(down & closed, 0.0)
+
+    agg = work.groupby(["SYMBOL", "DATE"], as_index=False)[
+        list(_FUT_QUADRANT_COLUMNS[:4])
+    ].sum().rename(columns={"SYMBOL": "symbol", "DATE": "date"})
+
+    agg["q_fut_direction"] = _direction_score(
+        agg["q_long_buildup_notional"] + agg["q_short_cover_notional"],
+        agg["q_short_buildup_notional"] + agg["q_long_unwind_notional"],
+    )
+    return agg[["symbol", "date", *_FUT_QUADRANT_COLUMNS]]
+
+
 # ═════════════════════════ cache streaming + orchestration ═════════════════
 
 _OPTION_COLUMNS = [
     "DATE", "SYMBOL", "INSTRUMENT", "EXPIRY_DT", "STRIKE_PR",
     "OPTION_TYP", "OPEN_INT", "CHG_IN_OI", "CONTRACTS",
+    "SETTLE_PR", "CLOSE",
 ]
+
+# Contract identity for the day-over-day price join. EXPIRY_DT stays a
+# dictionary-encoded string: joining on it as text is cheaper than parsing
+# 60.6M values, and it sidesteps the %b/%B ambiguity that _parse_expiry exists
+# to handle.
+_CONTRACT_KEY = ["SYMBOL", "EXPIRY_DT", "STRIKE_PR", "OPTION_TYP"]
 _FUTURES_CACHE_COLUMNS = [
     "DATE", "SYMBOL", "INSTRUMENT", "EXPIRY_DT", "SETTLE_PR",
     "CLOSE", "OPEN_INT", "CHG_IN_OI", "CONTRACTS",
@@ -511,28 +856,109 @@ def _row_group_date(reader: pq.ParquetFile, rg: int) -> pd.Timestamp | None:
     return pd.Timestamp(stats.min)
 
 
+_DAY_DELTA_SQL = """
+SELECT om.symbol                            AS "SYMBOL",
+        e ->> 'expiry'                      AS "EXPIRY_DT",
+       (e ->> 'strike')::double precision   AS "STRIKE_PR",
+        e ->> 'type'                        AS "OPTION_TYP",
+       (e ->> 'delta')::double precision    AS delta
+FROM option_metrics om
+CROSS JOIN LATERAL jsonb_array_elements(om.option_chain) AS e
+WHERE om.date = %s AND om.option_chain IS NOT NULL
+"""
+
+
+def _load_day_delta(conn: Any, day: pd.Timestamp) -> pd.DataFrame:
+    """One day's per-strike delta from ``option_metrics.option_chain``.
+
+    Delta is not in the bhavcopy parquet cache — it is computed by the ETL and
+    persisted per chain element. The quadrants need it to strip the underlying's
+    own move out of the premium change, so this is fetched one day at a time
+    alongside the row-group stream rather than as a single pass over all 49.5M
+    chain elements. Measured at ~0.15 s per date, so ~3 minutes over the full
+    history.
+
+    The chain's ``expiry`` strings use the same ``%d-%b-%Y`` shape as the
+    cache's ``EXPIRY_DT``, so the join key needs no parsing on either side.
+    """
+    frame = pd.read_sql(_DAY_DELTA_SQL, conn, params=(day.date(),))
+    if frame.empty:
+        return frame
+    frame["SYMBOL"] = frame["SYMBOL"].astype(str)
+    frame["EXPIRY_DT"] = frame["EXPIRY_DT"].astype(str)
+    frame["OPTION_TYP"] = frame["OPTION_TYP"].astype(str)
+    return frame
+
+
+def _ordered_row_groups(
+    reader: pq.ParquetFile, wanted: set[Any]
+) -> tuple[list[int], set[int]]:
+    """Row groups to stream, **in trade-date order**, plus the subset to emit.
+
+    The cache's row groups are one per trade date but they are *not* stored in
+    chronological order — the frame is sorted by symbol, so the groups come out
+    in whatever order the dates fell, with 293 backward steps over the five
+    years. Streaming them in file order and calling the last one "yesterday"
+    silently joins each day against an arbitrary other day. Nothing complains:
+    the same contract exists on both days, so the merge succeeds and returns a
+    price change spanning months.
+
+    The outlier detector never noticed because it is purely within-day. The
+    buildup quadrants are the first thing here that needs an actual yesterday.
+
+    Returns ``(ordered_groups, emit)`` where ``ordered_groups`` also carries one
+    seed group ahead of the window — so a ``--limit-dates`` run's first day
+    still has a previous mark — and ``emit`` is the subset whose results count.
+    """
+    dated: list[tuple[pd.Timestamp, int]] = []
+    for rg in range(reader.metadata.num_row_groups):
+        day = _row_group_date(reader, rg)
+        if day is None:
+            # No usable statistics: pay for a DATE-only read rather than guess
+            # an order. Does not happen on the shipped cache.
+            col = reader.read_row_group(rg, columns=["DATE"]).to_pandas()["DATE"]
+            if col.empty:
+                continue
+            day = pd.Timestamp(col.min())
+        dated.append((day, rg))
+    dated.sort(key=lambda pair: pair[0])
+
+    emit = {rg for day, rg in dated if day in wanted}
+    if not emit:
+        return [], emit
+    first = next(i for i, (_, rg) in enumerate(dated) if rg in emit)
+    seed = [dated[first - 1][1]] if first > 0 else []
+    return [*seed, *[rg for _, rg in dated[first:] if rg in emit]], emit
+
+
 def _outlier_pass(
+    conn: Any,
     cache_path: Path,
     spot: pd.DataFrame,
+    emit_dates: set[Any],
     z_threshold: float,
     min_share: float,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Stream the cache one row group (= one trade date) at a time.
 
     Outlier detection never looks outside a single (symbol, date, expiry), so
     a whole-frame load would buy nothing and cost ~9 GB. Each row group holds
-    one trade date (~48k rows), which is also why no cross-row-group state is
-    carried here.
+    one trade date (~48k rows).
+
+    The buildup quadrants do need one day of history, so exactly **one**
+    previous frame is retained — the contract key plus its mark, nothing else.
+    Retaining more (a dict of per-symbol frames) is what OOM-killed the ETL at
+    ~12.5 GB once already, see ``storage.etl._load_cache``.
+
+    Returns ``(outliers, option_quadrants)``, both one row per symbol-day.
     """
     reader = pq.ParquetFile(cache_path)
     wanted = set(spot["DATE" if "DATE" in spot.columns else "date"])
-    groups = [
-        rg
-        for rg in range(reader.metadata.num_row_groups)
-        if _row_group_date(reader, rg) is None
-        or _row_group_date(reader, rg) in wanted
-    ]
+    groups, _ = _ordered_row_groups(reader, wanted)
+
     parts: list[pd.DataFrame] = []
+    quads: list[pd.DataFrame] = []
+    prev: pd.DataFrame | None = None
     with progress_stage(
         "Scanning chain for outlier strikes", total=len(groups), unit="days",
     ) as bar:
@@ -541,28 +967,85 @@ def _outlier_pass(
             day = day.loc[day["INSTRUMENT"].astype(str).isin(_OPTION_INSTRUMENTS)]
             label = None
             if not day.empty:
-                merged = _merge_spot(day, spot)
-                label = str(pd.to_datetime(day["DATE"].iloc[0]).date())
-                if not merged.empty:
-                    parts.append(
-                        detect_outlier_strikes(merged, z_threshold, min_share)
+                day = day.copy()
+                day["mark"] = _mark(day)
+                stamp = pd.Timestamp(day["DATE"].iloc[0])
+                label = str(stamp.date())
+                # Spot and delta are attached before the emit check: this frame
+                # becomes the next iteration's `prev`, and the residual needs
+                # both from the *previous* day.
+                day = _merge_spot(day, spot)
+                if not day.empty:
+                    delta = _load_day_delta(conn, stamp)
+                    day = (
+                        day.merge(delta, on=_CONTRACT_KEY, how="left")
+                        if not delta.empty
+                        else day.assign(delta=np.nan)
                     )
+                    if stamp in emit_dates:
+                        merged = _attach_prev_mark(day, prev)
+                        parts.append(
+                            detect_outlier_strikes(merged, z_threshold, min_share)
+                        )
+                        quads.append(option_quadrants(merged))
+                    prev = day[[*_CONTRACT_KEY, "mark", "delta", "spot"]]
             bar.advance(label=label)
-    if not parts:
-        return _empty_outlier_frame()
-    return pd.concat(parts, ignore_index=True)
+
+    parts = [f for f in parts if not f.empty]
+    quads = [f for f in quads if not f.empty]
+    outliers = (
+        pd.concat(parts, ignore_index=True) if parts else _empty_outlier_frame()
+    )
+    quadrants = (
+        pd.concat(quads, ignore_index=True)
+        if quads
+        else _empty_keyed_frame(["ce_writer_frac", "pe_writer_frac", "opt_direction"])
+    )
+    return outliers, quadrants
 
 
-def _futures_pass(cache_path: Path, spot: pd.DataFrame) -> pd.DataFrame:
-    """Read only the futures rows (~752k of 60.6M) via a predicate push-down."""
+def _attach_prev_mark(day: pd.DataFrame, prev: pd.DataFrame | None) -> pd.DataFrame:
+    """Left-join the previous trading day's mark onto today's contracts.
+
+    A left join is deliberate: a contract listed today has no previous row and
+    must end up with ``NaN``, not a zero price change. Contracts that expired
+    simply do not appear in ``day`` and drop out on their own.
+    """
+    if prev is None or prev.empty:
+        out = day.copy()
+        for col in ("mark_prev", "delta_prev", "spot_prev"):
+            out[col] = np.nan
+        return out
+    return day.merge(
+        prev.rename(
+            columns={"mark": "mark_prev", "delta": "delta_prev", "spot": "spot_prev"}
+        ),
+        on=_CONTRACT_KEY,
+        how="left",
+    )
+
+
+def _futures_pass(
+    cache_path: Path, spot: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Read only the futures rows (~752k of 60.6M) via a predicate push-down.
+
+    Returns ``(basis, quadrants)``. The basis is near-month only; the quadrants
+    span every expiry, because a roll is an unwind in the near contract and a
+    buildup in the next and netting them at the symbol level is the point.
+    """
     frame = pd.read_parquet(
         cache_path,
         columns=_FUTURES_CACHE_COLUMNS,
         filters=[("INSTRUMENT", "in", list(_FUTURES_INSTRUMENTS))],
     )
     if frame.empty:
-        return pd.DataFrame(columns=["symbol", "date", "spot", *_FUTURES_COLUMNS])
-    return futures_basis(_merge_spot(frame, spot))
+        return (
+            pd.DataFrame(columns=["symbol", "date", "spot", *_FUTURES_COLUMNS]),
+            pd.DataFrame(columns=["symbol", "date", *_FUT_QUADRANT_COLUMNS]),
+        )
+    merged = _merge_spot(frame, spot)
+    return futures_basis(merged), futures_quadrants(merged)
 
 
 def _attach_notionals(frame: pd.DataFrame) -> pd.DataFrame:
@@ -616,8 +1099,18 @@ def build_flow_features(
     if spot.empty:
         raise ValueError("option_metrics has no rows with an underlying_price")
 
-    outliers = _outlier_pass(cache_path, spot, z_threshold, min_share)
-    futures = _futures_pass(cache_path, spot)
+    # The quadrants need the day *before* the window as a price/delta seed, so
+    # the streaming pass gets one extra date of spot while the emitted set stays
+    # exactly the window. Without this a --limit-dates run's first day would
+    # silently lose its direction columns.
+    emit_dates = set(spot["date"])
+    spot_seeded = (
+        load_spot_frame(conn, limit_dates + 1) if limit_dates else spot
+    )
+    outliers, opt_quads = _outlier_pass(
+        conn, cache_path, spot_seeded, emit_dates, z_threshold, min_share
+    )
+    futures, fut_quads = _futures_pass(cache_path, spot)
 
     if outliers.empty and futures.empty:
         return pd.DataFrame(columns=list(FLOW_COLUMNS))
@@ -625,11 +1118,22 @@ def build_flow_features(
     # `spot` rides along on the futures side; the outlier side needs it too for
     # notional, so pull it back from option_metrics rather than from whichever
     # side happened to survive the join.
-    merged = outliers.merge(
-        futures.drop(columns=["spot"]), on=["symbol", "date"], how="outer"
+    merged = _align_keys(outliers).merge(
+        _align_keys(futures.drop(columns=["spot"])),
+        on=["symbol", "date"],
+        how="outer",
     )
+    # Both quadrant families are left joins onto the union above: a symbol-day
+    # with no traded open-interest change gets NULL, never a neutral 0.
+    for extra in (opt_quads, fut_quads):
+        if not extra.empty:
+            merged = merged.merge(
+                _align_keys(extra), on=["symbol", "date"], how="left"
+            )
     merged = merged.merge(
-        spot[["symbol", "date", "spot"]], on=["symbol", "date"], how="left"
+        _align_keys(spot[["symbol", "date", "spot"]]),
+        on=["symbol", "date"],
+        how="left",
     )
     merged = _attach_notionals(merged)
 

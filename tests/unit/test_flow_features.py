@@ -25,6 +25,8 @@ from mktmtm.features.flow import (
     _robust_scale,
     detect_outlier_strikes,
     futures_basis,
+    futures_quadrants,
+    option_quadrants,
     write_flow_features,
 )
 
@@ -421,3 +423,311 @@ def test_expiry_parsing_survives_a_may_then_june_chunk() -> None:
     ]
     already = pd.Series(pd.to_datetime(["2024-05-30"]))
     assert list(_parse_expiry(already)) == [pd.Timestamp("2024-05-30")]
+
+
+# ── buildup quadrants ───────────────────────────────────────────────────────
+
+
+def _futures_two_days(
+    price_delta: float, oi_delta: float, contracts: float = 500.0
+) -> pd.DataFrame:
+    """One futures contract on two consecutive days, with a chosen move."""
+    return pd.DataFrame(
+        {
+            "SYMBOL": ["ACME", "ACME"],
+            "DATE": [DAY - pd.Timedelta(days=1), DAY],
+            "EXPIRY_DT": ["30-Jan-2025", "30-Jan-2025"],
+            "SETTLE_PR": [1200.0, 1200.0 + price_delta],
+            "CLOSE": [1200.0, 1200.0 + price_delta],
+            "CHG_IN_OI": [0.0, oi_delta],
+            "CONTRACTS": [contracts, contracts],
+            "spot": [SPOT, SPOT],
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    ("price_delta", "oi_delta", "expected"),
+    [
+        (+5.0, +1000.0, "q_long_buildup_notional"),
+        (-5.0, +1000.0, "q_short_buildup_notional"),
+        (+5.0, -1000.0, "q_short_cover_notional"),
+        (-5.0, -1000.0, "q_long_unwind_notional"),
+    ],
+)
+def test_futures_quadrants_classify_the_four_cases(
+    price_delta: float, oi_delta: float, expected: str
+) -> None:
+    """Each price/OI sign pair lands in exactly one bucket, and only one."""
+    out = futures_quadrants(_futures_two_days(price_delta, oi_delta))
+    row = out.loc[out["date"] == DAY].iloc[0]
+
+    buckets = [
+        "q_long_buildup_notional",
+        "q_short_buildup_notional",
+        "q_short_cover_notional",
+        "q_long_unwind_notional",
+    ]
+    assert row[expected] == pytest.approx(abs(oi_delta) * SPOT)
+    assert all(row[b] == 0.0 for b in buckets if b != expected)
+
+
+def test_futures_direction_signs_follow_the_bullish_buckets() -> None:
+    """Long buildup and short covering are bullish; the other two are bearish."""
+    bullish = futures_quadrants(_futures_two_days(+5.0, +1000.0))
+    bearish = futures_quadrants(_futures_two_days(-5.0, +1000.0))
+    assert bullish.loc[bullish["date"] == DAY, "q_fut_direction"].iloc[0] == 1.0
+    assert bearish.loc[bearish["date"] == DAY, "q_fut_direction"].iloc[0] == -1.0
+
+
+def test_untraded_contracts_get_no_quadrant() -> None:
+    """CONTRACTS == 0 contributes nothing.
+
+    On an untraded contract SETTLE_PR is a theoretical mark, so the change
+    between two consecutive such marks is model output, not a transaction.
+    Giving it a quadrant would manufacture signal out of arithmetic.
+    """
+    out = futures_quadrants(_futures_two_days(+5.0, +1000.0, contracts=0.0))
+    assert out.empty or out.loc[out["date"] == DAY].empty
+
+
+def test_new_listings_have_null_not_zero_price_change() -> None:
+    """A contract with no previous day is excluded, not treated as unchanged."""
+    frame = _futures_two_days(+5.0, +1000.0)
+    frame = frame.loc[frame["DATE"] == DAY]  # drop the history
+    out = futures_quadrants(frame)
+    assert out.empty or out.loc[out["date"] == DAY].empty
+
+
+def test_expiry_roll_drops_vanished_contracts() -> None:
+    """An expired contract present only on the earlier day does not resurrect."""
+    frame = _futures_two_days(+5.0, +1000.0)
+    expired = frame.iloc[[0]].copy()
+    expired["EXPIRY_DT"] = "26-Dec-2024"
+    out = futures_quadrants(pd.concat([frame, expired], ignore_index=True))
+    # Only the surviving contract's move is counted.
+    row = out.loc[out["date"] == DAY].iloc[0]
+    assert row["q_long_buildup_notional"] == pytest.approx(1000.0 * SPOT)
+
+
+def _options_two_days(
+    option_typ: str,
+    premium_delta: float,
+    oi_delta: float = 1000.0,
+    *,
+    delta_prev: float = 0.5,
+    spot_move: float = 0.0,
+) -> pd.DataFrame:
+    """One option contract with a chosen premium move and OI build.
+
+    ``spot_move`` defaults to 0 so ``premium_delta`` *is* the delta-adjusted
+    residual and the direction tests stay about the sign mapping rather than
+    the adjustment arithmetic.
+    """
+    return pd.DataFrame(
+        {
+            "SYMBOL": ["ACME"],
+            "DATE": [DAY],
+            "OPTION_TYP": [option_typ],
+            "CHG_IN_OI": [oi_delta],
+            "CONTRACTS": [500.0],
+            "spot": [SPOT + spot_move],
+            "spot_prev": [SPOT],
+            "mark": [50.0 + premium_delta],
+            "mark_prev": [50.0],
+            "delta_prev": [delta_prev],
+        }
+    )
+
+
+def test_call_writing_and_put_writing_have_opposite_signs() -> None:
+    """Calls bought and puts written are bullish; puts bought and calls written bearish.
+
+    This is the test that catches the likeliest bug in this family. A sign
+    transposition is invisible in aggregate — every downstream number stays
+    plausible while meaning the reverse — and it would silently invert the
+    regime states and the attribution built on top.
+    """
+    call_bought = option_quadrants(_options_two_days("CE", +5.0))
+    call_written = option_quadrants(_options_two_days("CE", -5.0))
+    put_bought = option_quadrants(_options_two_days("PE", +5.0))
+    put_written = option_quadrants(_options_two_days("PE", -5.0))
+
+    assert call_bought["opt_direction"].iloc[0] == 1.0
+    assert put_written["opt_direction"].iloc[0] == 1.0
+    assert call_written["opt_direction"].iloc[0] == -1.0
+    assert put_bought["opt_direction"].iloc[0] == -1.0
+
+    # And the writer fractions land on the right side of the chain.
+    assert call_written["ce_writer_frac"].iloc[0] == 1.0
+    assert call_bought["ce_writer_frac"].iloc[0] == 0.0
+    assert put_written["pe_writer_frac"].iloc[0] == 1.0
+
+
+def test_option_quadrants_ignore_closing_interest() -> None:
+    """Only newly opened interest carries a view; a close-out is excluded."""
+    out = option_quadrants(_options_two_days("CE", +5.0, oi_delta=-1000.0))
+    assert out.empty or pd.isna(out["opt_direction"].iloc[0])
+
+
+def test_direction_score_is_null_when_no_traded_flow() -> None:
+    """A zero denominator surfaces as NaN, never as a neutral 0.0.
+
+    A symbol-day with no traded open-interest change is *unmeasured*, not
+    *neutral* — the two average to opposite conclusions.
+    """
+    flat = option_quadrants(_options_two_days("CE", 0.0))
+    assert flat.empty or pd.isna(flat["opt_direction"].iloc[0])
+
+
+def test_direction_scores_are_bounded() -> None:
+    """Random builds keep both direction scores inside [-1, 1]."""
+    rng = np.random.default_rng(7)
+    n = 400
+    frame = pd.DataFrame(
+        {
+            "SYMBOL": rng.choice(["ACME", "BETA"], n),
+            "DATE": DAY,
+            "OPTION_TYP": rng.choice(["CE", "PE"], n),
+            "CHG_IN_OI": rng.integers(1, 5000, n).astype("float64"),
+            "CONTRACTS": rng.integers(1, 900, n).astype("float64"),
+            "spot": SPOT,
+            "spot_prev": SPOT,
+            "delta_prev": rng.uniform(-1, 1, n),
+            "mark": 50.0 + rng.normal(0, 5, n),
+            "mark_prev": 50.0,
+        }
+    )
+    out = option_quadrants(frame)
+    assert out["opt_direction"].between(-1.0, 1.0).all()
+    assert out["ce_writer_frac"].between(0.0, 1.0).all()
+    assert out["pe_writer_frac"].between(0.0, 1.0).all()
+
+
+def test_outlier_direction_is_null_without_price_history() -> None:
+    """The detector still works when no mark is supplied; direction stays NaN."""
+    chain = _chain()
+    chain.loc[0, "CHG_IN_OI"] = 500_000.0
+    out = detect_outlier_strikes(chain)
+    assert out["oi_outlier_count"].iloc[0] >= 1
+    assert pd.isna(out["oi_outlier_direction"].iloc[0])
+    assert pd.isna(out["oi_outlier_writer_frac"].iloc[0])
+
+
+def test_outlier_direction_reads_the_flagged_strike() -> None:
+    """A flagged call build on a falling premium is call writing, hence bearish."""
+    chain = _chain()
+    chain["CONTRACTS"] = 500.0
+    chain["mark"] = 50.0
+    chain["mark_prev"] = 50.0
+    chain["delta_prev"] = 0.5
+    chain["spot_prev"] = SPOT  # flat underlying: the residual is the raw move
+    chain.loc[0, "OPTION_TYP"] = "CE"
+    chain.loc[0, "CHG_IN_OI"] = 500_000.0
+    chain.loc[0, "mark"] = 40.0  # premium fell while OI surged -> writers
+
+    out = detect_outlier_strikes(chain)
+    assert out["oi_outlier_count"].iloc[0] == 1
+    assert out["oi_outlier_writer_frac"].iloc[0] == 1.0
+    assert out["oi_outlier_direction"].iloc[0] == -1.0
+
+
+def test_empty_day_does_not_poison_the_merge_key_dtype() -> None:
+    """A quiet day's empty frame must not turn a concatenated date column to object.
+
+    Under pandas 3.0 an empty frame's dtypes take part in concat resolution, so
+    one such day silently made `date` object-typed and the build then died at
+    the merge — 3.5 minutes in, with a message about datetime64[us] vs object
+    that pointed nowhere near the cause.
+    """
+    from mktmtm.features.flow import _empty_keyed_frame
+
+    empty = option_quadrants(
+        _options_two_days("CE", 0.0)  # flat premium -> nothing to classify
+    )
+    real = option_quadrants(_options_two_days("CE", +5.0))
+    combined = pd.concat([empty, real], ignore_index=True)
+    assert combined["date"].dtype.kind == "M"
+
+    typed = _empty_keyed_frame(["a", "b"])
+    assert typed["date"].dtype.kind == "M"
+    assert list(typed.columns) == ["symbol", "date", "a", "b"]
+
+
+def test_row_groups_stream_in_trade_date_order() -> None:
+    """The cache's row groups are not stored chronologically; the pass must sort them.
+
+    The frame is sorted by symbol, so the one-row-group-per-date layout comes
+    out in date order only by accident — it does not, with 293 backward steps
+    over the five years. Streaming in file order and calling the last group
+    "yesterday" joins each day against an arbitrary other day, and nothing
+    complains because the same contract exists on both days.
+    """
+    from mktmtm.features.flow import _ordered_row_groups
+
+    scrambled = [
+        pd.Timestamp("2024-03-05"),   # rg 0
+        pd.Timestamp("2022-01-04"),   # rg 1
+        pd.Timestamp("2023-06-12"),   # rg 2
+        pd.Timestamp("2022-01-05"),   # rg 3
+    ]
+
+    class _FakeReader:
+        class metadata:  # noqa: N801 - mirrors pyarrow's attribute shape
+            num_row_groups = len(scrambled)
+
+    def _fake_date(_reader: object, rg: int) -> pd.Timestamp:
+        return scrambled[rg]
+
+    import mktmtm.features.flow as flow_mod
+
+    original = flow_mod._row_group_date
+    flow_mod._row_group_date = _fake_date  # type: ignore[assignment]
+    try:
+        wanted = {pd.Timestamp("2022-01-05"), pd.Timestamp("2023-06-12")}
+        groups, emit = _ordered_row_groups(_FakeReader(), wanted)  # type: ignore[arg-type]
+    finally:
+        flow_mod._row_group_date = original  # type: ignore[assignment]
+
+    # Chronological, and seeded with the group immediately before the window.
+    assert groups == [1, 3, 2]
+    assert emit == {3, 2}
+    assert [scrambled[g] for g in groups] == sorted(scrambled[g] for g in groups)
+
+
+def test_delta_adjustment_removes_a_pure_spot_move() -> None:
+    """A premium move exactly explained by the underlying classifies as neither side.
+
+    This is the confound the adjustment exists for: a call premium rises when
+    the stock rises, with no aggressive buyer involved. Measured over 163,383
+    traded contracts, the raw and adjusted readings disagree on 35.8% of them,
+    which is why the raw change is not used as a fallback.
+    """
+    # delta 0.5, spot +10 -> a +5.0 premium move is fully explained.
+    explained = option_quadrants(
+        _options_two_days("CE", +5.0, delta_prev=0.5, spot_move=+10.0)
+    )
+    assert explained.empty or pd.isna(explained["opt_direction"].iloc[0])
+
+    # The same premium move with a flat underlying is genuine buying.
+    genuine = option_quadrants(
+        _options_two_days("CE", +5.0, delta_prev=0.5, spot_move=0.0)
+    )
+    assert genuine["opt_direction"].iloc[0] == 1.0
+
+
+def test_delta_adjustment_can_flip_the_reading() -> None:
+    """A rising premium can still be writer-driven once the spot move is removed."""
+    # Premium +2 but the underlying alone explains +5: net, writers pressed.
+    flipped = option_quadrants(
+        _options_two_days("CE", +2.0, delta_prev=0.5, spot_move=+10.0)
+    )
+    assert flipped["ce_writer_frac"].iloc[0] == 1.0
+    assert flipped["opt_direction"].iloc[0] == -1.0
+
+
+def test_contracts_without_delta_are_dropped_not_guessed() -> None:
+    """No delta means no classification — the raw change is not a usable fallback."""
+    frame = _options_two_days("CE", +5.0).drop(columns=["delta_prev"])
+    out = option_quadrants(frame)
+    assert out.empty or pd.isna(out["opt_direction"].iloc[0])
