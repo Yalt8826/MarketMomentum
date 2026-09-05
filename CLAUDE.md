@@ -28,6 +28,7 @@ Full pipeline order (ML training path):
 uv run mktmtm fetch-bhavcopy        # NSE F&O bhavcopy → data/raw/bhavcopy/
 uv run mktmtm fetch-yahoo           # daily closes → data/raw/yahoo_finance/
 uv run mktmtm fetch-participant-oi  # NSE participant-wise OI (FII/DII/Pro/Client) → participant_oi
+uv run mktmtm fetch-deals           # NSE bulk/block deals → deals (see the caveats below)
 uv run mktmtm preparse-bhavcopy     # parquet cache; re-run after EVERY fetch (speeds etl ~4x)
 uv run mktmtm etl                   # threaded per-symbol ETL → option_metrics
 uv run mktmtm make-dataset          # features + targets → ml_dataset (+ parquet)
@@ -118,6 +119,13 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   premium change: a call premium rises when the underlying rises regardless of who traded. Raw
   and adjusted disagree on 35.8% of contracts (`scripts/measure_delta_adjustment.py`), and the
   aggregate does not reveal it — the writer share barely moves while individual assignments differ.
+- **NSE bulk/block deal history cannot be fetched programmatically.** `bulk.csv`/`block.csv` serve
+  only the latest trading day, and `/api/historical/*-deals` returns HTTP 503 to any programmatic
+  client even with a fully warmed session (it is bot detection — the same report downloads fine
+  from a browser). History must be downloaded by hand into `data/raw/deals/`. And **bulk deals
+  structurally exclude the F&O universe**: the 0.5%-of-listed-shares threshold selects microcaps,
+  so 0 of 158 rows on the day measured were in our 217 symbols. Block deals reach large caps but
+  are rare (~2/day). See `docs/implementation/deals-label.md`.
 - **The calendar-only baseline is the bar for any market-level claim.** The expiry cycle alone
   reaches AUC 0.61–0.72 on next-day participant flow. Stage 1 found no feature set beats it.
 - **Never use causal within-symbol z-scoring to remove symbol fixed effects here.** It subtracts a
@@ -154,6 +162,9 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+`docs/implementation/deals-label.md` (the per-symbol institutional label: why every stage so far
+lacked one, why NSE's history is not fetchable, and why bulk deals structurally miss the F&O
+universe),
 `docs/results/README.md` (**start here for outcomes** — consolidated results across all four
 modelling stages, with the validity checks that make the negative results credible),
 `docs/implementation/model-00-overview.md` (the four-stage

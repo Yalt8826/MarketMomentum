@@ -740,6 +740,67 @@ def _print_momentum_table(result: dict[str, Any]) -> None:
     )
 
 
+@app.command(name="fetch-deals")
+def fetch_deals(
+    files: Annotated[
+        list[Path] | None,
+        typer.Option(
+            "--file",
+            help="Manually downloaded NSE deal CSV; repeatable. Kind inferred from the name.",
+        ),
+    ] = None,
+    directory: Annotated[
+        Path | None,
+        typer.Option("--dir", help="Load every *.csv in this directory."),
+    ] = None,
+    latest: Annotated[
+        bool,
+        typer.Option(
+            "--latest/--no-latest",
+            help="Also fetch the latest trading day from NSE's archive.",
+        ),
+    ] = True,
+) -> None:
+    """Load NSE bulk/block deals into `deals` — the per-symbol institutional label.
+
+    NSE's archive serves only the LATEST trading day, and its historical API is
+    bot-protected (HTTP 503 to any programmatic client). So history comes from
+    CSVs downloaded by hand at
+    https://www.nseindia.com/report-detail/display-bulk-and-block-deals
+    and passed with --file/--dir; --latest builds the record forward.
+    """
+    import psycopg2
+
+    from mktmtm.data.deals import default_deal_dir, run_fetch_deals
+    from mktmtm.storage.db import build_dsn
+
+    paths = list(files or [])
+    search = directory or default_deal_dir()
+    if search.exists():
+        paths.extend(sorted(search.glob("*.csv")))
+    paths = sorted({p.resolve() for p in paths})
+    if not paths and not latest:
+        typer.echo(f"no CSVs found in {search} and --no-latest given; nothing to do")
+        raise typer.Exit(1)
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        summary = run_fetch_deals(conn, files=paths, fetch_latest=latest)
+    finally:
+        conn.close()
+
+    typer.echo(
+        f"\ndeals: {summary['rows']:,} parsed, {summary['written']:,} written"
+    )
+    if summary.get("period"):
+        typer.echo(
+            f"  {summary['period']} · {summary.get('dates', 0)} dates · "
+            f"{summary.get('symbols', 0)} symbols · {summary.get('by_kind', {})}"
+        )
+    for err in summary.get("errors", []):
+        typer.echo(f"  ! {err}")
+
+
 @app.command(name="test-gex")
 def test_gex(
     limit_symbols: Annotated[
