@@ -169,11 +169,30 @@ def process(
 
 
 @app.command()
-def etl() -> None:
-    """Run the threaded per-symbol ETL into PostgreSQL."""
+def etl(
+    since: Annotated[
+        datetime | None,
+        typer.Option(
+            "--since",
+            formats=["%Y-%m-%d"],
+            help="Reprocess and rewrite from this date. Overrides the discovered frontier.",
+        ),
+    ] = None,
+    full: Annotated[
+        bool,
+        typer.Option("--full", help="Recompute every symbol over all history."),
+    ] = False,
+) -> None:
+    """Run the threaded per-symbol ETL into PostgreSQL.
+
+    Incremental by default: reads the per-symbol frontier from option_metrics,
+    loads only the trailing window of the bhavcopy cache, and writes only days
+    that symbol does not already have. A full rebuild recomputes five years to
+    add a few days and needs ~9 GB resident, which OOM-killed a 14 GiB host.
+    """
     from mktmtm.storage.etl import main as run_etl
 
-    run_etl()
+    run_etl(since=since.date() if since else None, full=full)
     typer.echo("ETL finished.")
 
 

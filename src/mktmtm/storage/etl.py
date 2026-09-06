@@ -96,7 +96,9 @@ def _load_bhavcopy(fp: Path) -> pd.DataFrame | None:
     return None
 
 
-def _load_cache(cache_path: Path) -> tuple[pd.DataFrame, dict[str, tuple[int, int]]] | None:
+def _load_cache(
+    cache_path: Path, *, since: pd.Timestamp | None = None
+) -> tuple[pd.DataFrame, dict[str, tuple[int, int]]] | None:
     """Load the bhavcopy parquet cache as a single DataFrame + per-symbol offsets.
 
     Built by ``mktmtm preparse-bhavcopy`` (see ``data/bhavcopy.build_bhavcopy_cache``).
@@ -127,7 +129,12 @@ def _load_cache(cache_path: Path) -> tuple[pd.DataFrame, dict[str, tuple[int, in
     """
     if not cache_path.exists():
         return None
-    df = pd.read_parquet(cache_path)
+    # A date floor is pushed into the parquet reader rather than applied after,
+    # so an incremental run never materialises the years it does not need. This
+    # is what keeps the ETL inside memory on a 14 GiB host: the full cache is
+    # ~9 GB resident and was OOM-killed twice on 2026-09-05.
+    filters = [("DATE", ">=", since.to_pydatetime())] if since is not None else None
+    df = pd.read_parquet(cache_path, filters=filters)
     df["SYMBOL"] = df["SYMBOL"].astype(str)
     df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
     df = df.sort_values(["SYMBOL", "DATE"], kind="stable").reset_index(drop=True)
@@ -144,7 +151,12 @@ def _load_cache(cache_path: Path) -> tuple[pd.DataFrame, dict[str, tuple[int, in
     offsets = {
         str(s): (int(st), int(en)) for s, st, en in zip(syms, starts, ends, strict=True)
     }
-    logger.info("bhavcopy cache: %d rows, %d symbols (%s)", len(df), len(offsets), cache_path)
+    logger.info(
+        "bhavcopy cache: %d rows, %d symbols%s (%s)",
+        len(df), len(offsets),
+        f", from {since.date()}" if since is not None else "",
+        cache_path,
+    )
     return df, offsets
 
 
@@ -324,6 +336,7 @@ def _process_symbol(
     earnings_map: dict[str, list[date]],
     cfg: Settings,
     cache: tuple[pd.DataFrame, dict[str, tuple[int, int]]] | None = None,
+    write_after: date | None = None,
 ) -> int:
     logger.debug("┌─ processing %-10s", sym)
     time_map: dict[str, dict[str, Any]] = {}
@@ -556,6 +569,24 @@ def _process_symbol(
         )
 
     # ───────── write to DB ─────────
+    # An incremental run computes a trailing window so the 252-day IV
+    # percentile/rank have their history, but must NOT write the overlap back:
+    # those rows already hold values computed with a *complete* history, and
+    # the recomputed ones would be truncated at the window's start. Silently
+    # replacing correct values with worse ones is exactly the defect class this
+    # project keeps hitting, so the cutoff is applied at the write, not the read.
+    if write_after is not None:
+        kept = {
+            k: v for k, v in time_map.items()
+            if datetime.strptime(k, "%d-%b-%Y").date() > write_after
+        }
+        if len(kept) != len(time_map):
+            logger.debug(
+                "%s: %d of %d days already current, writing %d",
+                sym, len(time_map) - len(kept), len(time_map), len(kept),
+            )
+        time_map = kept
+
     if time_map:
         logger.debug(
             "--> building %s rows for %s (spot: %s), writing to DB ...",
@@ -570,8 +601,66 @@ def _process_symbol(
     return len(time_map)
 
 
+# ═════════════════════════ incremental support ═════════════════════════════
+
+#: Calendar days of history an incremental run recomputes before the frontier.
+#: ``_IV_WINDOW`` is 252 *trading* days, which is ~365 calendar days; 400 leaves
+#: room for holidays so the percentile/rank always see a full window.
+INCREMENTAL_LOOKBACK_DAYS = 400
+
+
+def _symbol_frontiers(cfg: Settings) -> dict[str, date]:
+    """``{symbol: latest date already in option_metrics}``.
+
+    Per symbol rather than one global frontier, because the two are not
+    interchangeable. After the OOM-killed run of 2026-09-05 three symbols sat
+    at 09-04 while 214 stopped at 08-28; a global ``MAX(date)`` would have been
+    09-04 and would have skipped writing the five missing days for everyone
+    else — turning a partial state into a permanent one.
+    """
+    import psycopg2
+
+    from mktmtm.storage.db import build_dsn
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT symbol, MAX(date) FROM option_metrics GROUP BY symbol")
+            return {str(sym): d for sym, d in cur.fetchall() if d is not None}
+    finally:
+        conn.close()
+
+
+def _incremental_plan(
+    cfg: Settings, *, since: date | None
+) -> tuple[pd.Timestamp | None, dict[str, date]]:
+    """``(cache floor, per-symbol write cutoffs)`` for an incremental run.
+
+    An explicit ``since`` overrides the discovered frontier and suppresses the
+    write cutoffs, so ``--since`` genuinely reprocesses and rewrites that range.
+    """
+    if since is not None:
+        return pd.Timestamp(since), {}
+
+    frontiers = _symbol_frontiers(cfg)
+    if not frontiers:
+        return None, {}  # empty table: this is a full build
+    newest = max(frontiers.values())
+    floor = pd.Timestamp(newest) - pd.Timedelta(days=INCREMENTAL_LOOKBACK_DAYS)
+    logger.info(
+        "incremental ETL: %d symbols known, newest %s, recomputing from %s",
+        len(frontiers), newest, floor.date(),
+    )
+    return floor, frontiers
+
+
 # ═════════════════════════ orchestrator ════════════════════════════════════
-def main(settings_: Settings | None = None) -> None:
+def main(
+    settings_: Settings | None = None,
+    *,
+    since: date | None = None,
+    full: bool = False,
+) -> None:
     cfg = settings_ if settings_ is not None else settings
 
     # ───────── symbol list ─────────
@@ -591,7 +680,16 @@ def main(settings_: Settings | None = None) -> None:
     bhavcopy_dir = cfg.raw_data_dir / "bhavcopy" / "extracted"
     bhav_files = [fp for fp, _ in discover_bhavcopy_files(bhavcopy_dir)]
     logger.info("bhav-copies to scan: %s", len(bhav_files))
-    cache = _load_cache(cfg.processed_data_dir / "bhavcopy_cache.parquet")
+    cache_floor: pd.Timestamp | None
+    write_after: dict[str, date]
+    if full:
+        cache_floor, write_after = None, {}
+        logger.info("full ETL: recomputing every symbol over all history")
+    else:
+        cache_floor, write_after = _incremental_plan(cfg, since=since)
+    cache = _load_cache(
+        cfg.processed_data_dir / "bhavcopy_cache.parquet", since=cache_floor
+    )
 
     # ───────── threaded execution ─────────
     failed = 0
@@ -603,7 +701,7 @@ def main(settings_: Settings | None = None) -> None:
         futures = {
             pool.submit(
                 _process_symbol, s, bhav_files, spot_price_map, daily_rate, earnings_map,
-                cfg, cache,
+                cfg, cache, write_after.get(s),
             ): s
             for s in symbols
         }

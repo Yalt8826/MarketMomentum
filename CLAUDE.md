@@ -35,7 +35,7 @@ uv run mktmtm fetch-participant-oi  # NSE participant-wise OI (FII/DII/Pro/Clien
 uv run mktmtm fetch-deals           # NSE bulk/block deals → deals (see the caveats below)
 uv run mktmtm fetch-shareholding    # SEBI quarterly FII/DII holdings → shareholding
 uv run mktmtm preparse-bhavcopy     # parquet cache; re-run after EVERY fetch (speeds etl ~4x)
-uv run mktmtm etl                   # threaded per-symbol ETL → option_metrics
+uv run mktmtm etl                   # threaded per-symbol ETL → option_metrics (INCREMENTAL)
 uv run mktmtm make-dataset          # features + targets → ml_dataset (+ parquet)
 uv run mktmtm flow-features         # outlier strikes + futures basis + buildup quadrants → flow_features
 uv run mktmtm backtest              # optional
@@ -168,6 +168,13 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   believing a forward one.
 - **`screen_corporate_actions` blanks, and logs, rather than drops.** A silent filter here is how
   survivorship bias creeps in.
+- **The ETL is incremental by default and a full rebuild will OOM a 14 GiB host.** `--full`
+  loads the entire ~60M-row cache (~9 GB resident) and was OOM-killed twice on 2026-09-05 —
+  silently, since SIGKILL is not catchable and the log just stops. Incremental loads ~10M rows
+  (~2.5 GB) and runs in ~1 h instead of 10–12. The write cutoff is **per symbol**, because a
+  global one would freeze a partially-updated table permanently; and the recomputed overlap is
+  **not** rewritten, because those rows hold IV percentile/rank computed with a full 252-day
+  history that a trailing window cannot reproduce.
 - **Re-running `make-dataset` alone cannot repair IV/strike/Greek defects** — those are baked into
   `option_metrics` at ETL time, so a fix there requires a full ETL re-run (3–5 h for 5 years).
 

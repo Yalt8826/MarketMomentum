@@ -39,7 +39,7 @@ Measured on this machine, five years of data.
 | 4 | Deals | `fetch-deals` | ~10s | Latest day only — see [deals-label.md](implementation/deals-label.md) |
 | 5 | Shareholding | `fetch-shareholding` | ~35m first run, ~30s cached | Gzip-cached under `data/raw/shareholding/` |
 | 6 | **Preparse** | `preparse-bhavcopy` | mins | **Must follow every bhavcopy fetch** |
-| 7 | **ETL** | `etl` | **3–5 h** | The long one |
+| 7 | **ETL** | `etl` | **~1 h incremental** | See below; `--full` is 10–12 h |
 | 8 | Dataset | `make-dataset` | mins | |
 | 9 | Flow features | `flow-features` | **7m 20s** | |
 | 10 | **Health gate** | `verify_db_health.py` | ~12s | **Stops here on failure** |
@@ -95,6 +95,40 @@ Expected row counts after a full run (they grow with new trading days):
 because every evaluation depends on that 1:1 join.
 
 ---
+
+## The ETL is incremental by default
+
+A full rebuild loads the whole ~60M-row bhavcopy cache (~9 GB resident) and
+recomputes five years to add a few days. On this 14 GiB host that was
+**OOM-killed twice** on 2026-09-05, silently — SIGKILL is not catchable, so the
+log simply stops with no error.
+
+Incremental mode reads the per-symbol frontier from `option_metrics`, pushes a
+date floor into the parquet reader, and writes only days a symbol lacks:
+
+| | Full | Incremental |
+|---|---|---|
+| Cache rows loaded | 60,768,679 | **10,450,235** |
+| Cache load time | ~1m45s | **7s** |
+| Peak RSS | ~5–9 GB (OOM) | **~2.5 GB** |
+| Runtime | 10–12 h | **~1 h** |
+
+```bash
+uv run mktmtm etl                      # incremental (default)
+uv run mktmtm etl --since 2026-01-01   # reprocess AND rewrite from a date
+uv run mktmtm etl --full               # rebuild everything; needs the memory
+```
+
+Two design points worth knowing. The write cutoff is **per symbol**, not
+global: after the OOM three symbols sat at 09-04 while 214 stopped at 08-28, and
+a global frontier would have frozen that partial state permanently. And the
+overlap is recomputed but **not rewritten** — those rows already hold IV
+percentile/rank computed with a complete 252-day history, and the recomputed
+ones are truncated at the window's start, so writing them would replace correct
+values with worse ones.
+
+A symbol more than `INCREMENTAL_LOOKBACK_DAYS` (400) behind needs `--since` or
+`--full` to backfill.
 
 ## Known stage gotchas
 

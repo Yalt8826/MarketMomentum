@@ -170,6 +170,9 @@ def _preparse() -> None:
 def _etl() -> None:
     from mktmtm.storage.etl import main as run_etl
 
+    # Incremental: a full rebuild needs ~9 GB resident for the whole bhavcopy
+    # cache and was OOM-killed twice on this host. `mktmtm etl --full` remains
+    # available for a deliberate rebuild.
     run_etl()
 
 
