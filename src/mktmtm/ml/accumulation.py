@@ -535,7 +535,11 @@ def evaluate_accumulation(
 def run_accumulation(
     conn: Any,
     *,
-    holders: tuple[str, ...] = ("fii", "dii"),
+    # "mf" is not optional: it is the holder the one surviving result lives in
+    # (§9.2), and the robustness battery and counterparty check are both gated
+    # on its cell existing. Omitting it made a standard pipeline run silently
+    # skip the project's headline finding.
+    holders: tuple[str, ...] = ("fii", "dii", "mf"),
     windows: tuple[Window, ...] = WINDOWS,
     drop_corporate_actions: bool = True,
     out_dir: Path = EVALUATION_DIR,

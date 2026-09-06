@@ -917,7 +917,7 @@ def accumulation(
     from mktmtm.ml.accumulation import WINDOWS, run_accumulation
     from mktmtm.storage.db import build_dsn
 
-    holders = tuple(holder) if holder else ("fii", "dii")
+    holders = tuple(holder) if holder else ("fii", "dii", "mf")
     windows = tuple(window) if window else WINDOWS
 
     conn = psycopg2.connect(build_dsn())

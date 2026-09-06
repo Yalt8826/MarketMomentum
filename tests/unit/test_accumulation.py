@@ -476,3 +476,18 @@ def test_a_prediction_record_is_not_silently_overwritten(tmp_path) -> None:  # t
 
     # Correcting a record made the same day stays possible, explicitly.
     write_nowcast_record(result, path, overwrite=True)
+
+
+def test_mutual_funds_are_in_the_default_holder_set() -> None:
+    """The headline result lives in `mf`, and the robustness battery is gated on it.
+
+    A default of ("fii", "dii") made a standard pipeline run compute neither
+    the surviving finding nor the checks that support it — while still exiting
+    zero and writing a results file that looked complete.
+    """
+    import inspect
+
+    from mktmtm.ml.accumulation import run_accumulation
+
+    default = inspect.signature(run_accumulation).parameters["holders"].default
+    assert "mf" in default, "the headline result would be silently skipped"
