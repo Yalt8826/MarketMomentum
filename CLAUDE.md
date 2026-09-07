@@ -197,6 +197,10 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+**`docs/understanding/v1/`** (the ground-up explanation of the whole project for a reader
+with no market background: markets → F&O → open interest → the Greeks → the project idea →
+data → pipeline → features → the six stages → results → the nine silent bugs. Written from
+the documents below and consistent with them; update it when a headline number changes),
 `docs/runbook.md` (running the pipeline end to end: order, measured timings, the three
 things that bite, and how to score the frozen nowcast),
 `docs/implementation/nowcast.md` (the detector run forward against an undisclosed quarter:
