@@ -1,6 +1,6 @@
 # 17 — Glossary
 
-[← Running it](16-running-it.md) · [Index](README.md)
+[← Running it](16-running-it.md) · [Index](README.md) · Next: [The rest of the repo →](18-the-rest-of-the-repo.md)
 
 Every term used anywhere in this folder, alphabetically. The document where it is
 introduced properly is linked.
@@ -353,4 +353,4 @@ outlier-strike detector. [10](10-the-features.md)
 Correct for comparability, and **wrong for measuring persistence** — it produced
 the project's largest and most spurious number. [15](15-bugs-and-lessons.md)
 
-[← Running it](16-running-it.md) · [Index](README.md)
+[← Running it](16-running-it.md) · [Index](README.md) · Next: [The rest of the repo →](18-the-rest-of-the-repo.md)

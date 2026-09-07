@@ -334,6 +334,34 @@ earnings calendar its own placebo beat.
 And crucially, Stage 5 has a **real label**: SEBI quarterly shareholding
 (document 07 §4). ~20 filings × ~200 symbols = 19 usable quarters.
 
+### The trap in the label itself: corporate actions
+
+Before any of that, a problem with the target has to be dealt with, and it is
+severe enough that leaving it in would have dominated the result.
+
+**A bonus issue or a stock split changes every holder's share count without
+anybody buying or selling anything.** Measured across the raw target
+distribution, the 99th percentile is foreign institutions apparently acquiring
+**31% of a company in a single quarter** — which no institution does organically.
+That is arithmetic being read as behaviour.
+
+`flag_corporate_actions` uses **two independent detectors**, because neither
+covers everything on its own:
+
+| Detector | How it works | Its blind spot |
+|---|---|---|
+| **Share-count ratio** between consecutive filings | Direct: if total shares jumped >5%, something structural happened | `total_shares` is derived and is NULL on ~11% of filings |
+| **Raw vs adjusted price divergence** inside the window | Yahoo adjusts retroactively, so the ratio between the two price series jumps on the ex-date | Needs price data in the window |
+
+The second exists precisely to cover the rows where the first is blind. The
+threshold separates cleanly because dividends move the adjustment factor by ~1%
+while splits move it by 50% or more.
+
+Flagged periods are **blanked, not silently dropped** — 3.4% of periods — and
+this is why [document 16](16-running-it.md) insists the scoring run must apply
+the same filter: a bonus issue in the scored quarter would otherwise read as a
+spectacular detection failure.
+
 ### The mandatory baseline: price momentum
 
 Momentum plays the role here that the expiry calendar played in Stage 1 — the

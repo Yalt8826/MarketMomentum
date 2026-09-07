@@ -50,17 +50,24 @@ about 152 symbols by it each quarter, and look at the extremes:
 
 | | **Top decile** | **Bottom decile** |
 |---|---|---|
-| Mean mutual-fund accumulation | **+0.661%** of the company | +0.164% |
-| Spread | **+0.497 percentage points** | |
+| Mean mutual-fund accumulation | **+0.679%** of the company | +0.155% |
+| Spread | **+0.524 percentage points** | |
 | Quarters where top beat bottom | **18 of 19** | |
-| Symbols that were accumulated at all | **71.0%** | 56.4% |
+| Symbols that were accumulated at all | **72.2%** | 56.1% |
 
-Base rate across all symbols: 62.7% were accumulated to some degree.
+Base rate across all symbols: **62.7%** were accumulated to some degree.
+19 periods, ~152 symbols each.
 
 **So:** pick the top 10% by this signal and mutual funds bought roughly **four
 times as much of those companies** as of the bottom 10% — and it worked in 18 of
-19 quarters. The directional hit rate is 71% against a 62.7% base rate: **+8
-percentage points**, which is modest and honest.
+19 quarters. The directional hit rate is 72.2% against a 62.7% base rate:
+**+9.5 percentage points**, which is modest and honest.
+
+> **Reproduce it:** `uv run python scripts/decile_spread.py`. That script reuses
+> `build_accumulation_frame` unchanged and applies the same momentum
+> residualisation `nowcast` ships, so it is a restatement of the shipped result
+> rather than a second experiment. The numbers move slightly as the database
+> gains trading days; these are as at `option_metrics` through **2026-09-04**.
 
 That is the finding. It is real, it is weak, and both halves of that sentence
 matter.

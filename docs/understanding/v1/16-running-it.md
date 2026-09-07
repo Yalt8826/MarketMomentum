@@ -139,7 +139,8 @@ A symbol more than 400 days behind needs `--since` or `--full` to backfill.
 
 ```bash
 uv run python scripts/verify_db_health.py     # all 7 sections should be ✓
-uv run pytest -m "not integration"            # 409 tests, no database needed
+uv run pytest -m "not integration"            # 463 tests, no database needed
+uv run python scripts/decile_spread.py        # restate Stage 5 as a decile spread
 ```
 
 Expected row counts (they grow with each new trading day):

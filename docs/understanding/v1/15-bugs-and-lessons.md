@@ -5,10 +5,15 @@
 This may be the most useful document in the folder, and it is certainly the most
 transferable.
 
-Nine defects are recorded here. **Every single one was silent** — none raised an
-exception, none made a stage fail, several made a stage report success. In a data
-pipeline, the bug that crashes is the easy one. The bug that quietly returns the
-wrong number is the one that ends up in a report.
+Ten defects are recorded here (entry 9 bundles three related ones), plus a
+statistical artefact that was not a bug at all. **All but two were silent** —
+they raised no exception, failed no stage, and in one case made a stage report
+success while doing nothing.
+
+The two exceptions are worth naming up front, because they are the *good* kind:
+two of the three pipeline wrapper bugs in entry 9 crashed immediately. Those cost
+minutes. The silent ones cost weeks, and one of them put a wrong number in a
+report. In a data pipeline the bug that crashes is the easy one.
 
 ---
 

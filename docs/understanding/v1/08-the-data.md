@@ -302,7 +302,7 @@ LTIM, PEL and TATAMOTORS (zero rows — an open, undiagnosed issue).
 
 ### The lot-size schedule
 
-`data/reference/lot_sizes.csv`, 853 rows, shaped
+`data/reference/lot_sizes.csv`, **852 change-points** (853 lines including the header), shaped
 `symbol, effective_from, lot_size, source` — a sparse **change-point schedule**,
 not a constant. All 217 symbols covered, median 3 revisions each, max 8.
 

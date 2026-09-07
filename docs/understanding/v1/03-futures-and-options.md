@@ -62,8 +62,23 @@ and 14).
 
 ### 2.2 Expiry and rolling
 
-Futures die. Indian stock futures expire on the last Thursday of each month. A
-participant who wants to keep a position past expiry has to close the dying
+Futures die. Indian stock futures expire once a month, on a weekday NSE has
+changed during this project's own data window — **last Thursday until September
+2025, last Tuesday from 2025-09-30 onwards**, and shifted a day earlier when
+that day is a holiday. Measured directly from the 65 distinct stock-future
+expiries in our bhavcopy cache:
+
+| Weekday | Expiries |
+|---|---|
+| Thursday | 47 (2021-08 → 2025-08) |
+| Tuesday | 13 (2025-09 → 2026-11) |
+| Wednesday | 3 (holiday shifts) |
+| Monday | 2 (holiday shifts) |
+
+**Never hard-code the weekday.** Take days-to-expiry from `EXPIRY_DT` in the
+data, which is what `fut_dte` does.
+
+A participant who wants to keep a position past expiry has to close the dying
 contract and open the next month's — a **roll**.
 
 Whether positions are rolled or simply allowed to die tells you whether

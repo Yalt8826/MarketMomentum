@@ -10,9 +10,11 @@ skim to [§5](#5-what-actually-moves-a-price).
 ## 1. A company, cut into pieces
 
 Reliance Industries is worth some amount of money. Rather than being owned by
-one person, that ownership is cut into roughly 13.5 billion identical pieces
-called **shares**. Own one share and you own one 13.5-billionth of the company:
-a claim on its profits, and a vote at its meetings.
+one person, that ownership is cut into identical pieces called **shares** —
+**13,301,834,778** of them as at its 30 June 2026 filing, which is a number this
+project holds in its own `shareholding.total_shares` column and you can query
+yourself. Own one share and you own one 13.3-billionth of the company: a claim
+on its profits, and a vote at its meetings.
 
 Two numbers follow immediately, and both matter enormously later:
 

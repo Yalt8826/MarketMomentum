@@ -55,6 +55,7 @@ already know what a call option and open interest are, start at #07.
 | 15 | [Bugs we found, and what they taught](15-bugs-and-lessons.md) | Six silent data defects. This is arguably the most useful document in the folder. |
 | 16 | [Running it yourself](16-running-it.md) | The commands, in order, with timings and what to expect. |
 | 17 | [Glossary](17-glossary.md) | Every term, alphabetically. |
+| 18 | [The rest of the repository](18-the-rest-of-the-repo.md) | Everything off the research path — the backtester, the UI, the API stub, the legacy pipeline, testing — plus a file-to-document map. |
 
 ---
 
