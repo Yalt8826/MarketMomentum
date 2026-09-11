@@ -1178,6 +1178,92 @@ def screen_cmd(
         typer.echo(f"\n  record written to {path}")
 
 
+@app.command(name="score-screens")
+def score_screens_cmd(
+    directory: Annotated[
+        Path,
+        typer.Option("--dir", help="Directory holding screen-*.json records."),
+    ] = Path("docs/trading/results/screens"),
+    variant: Annotated[
+        str, typer.Option("--variant", help="Backtest variant to score against.")
+    ] = "base",
+) -> None:
+    """Score the frozen screen records against what actually happened.
+
+    Runs the backtested strategy for each record's month and matches on symbol,
+    rather than reimplementing position management — the same anti-divergence
+    reasoning that keeps etl.py and pipeline/process.py in step.
+
+    Records entered on a day other than the month's first trading day are scored
+    and shown, but excluded from Gate 3: the backtest always enters on the first
+    trading day, so those positions were never measured.
+    """
+    import psycopg2
+
+    from mktmtm.serving.scoring import (
+        gate_3_report,
+        load_records,
+        running_record,
+        score_record,
+    )
+    from mktmtm.storage.db import build_dsn
+
+    payloads = load_records(directory)
+    if not payloads:
+        typer.echo(f"no screen records found in {directory}")
+        raise typer.Exit(1)
+
+    conn = psycopg2.connect(build_dsn())
+    try:
+        scored = [score_record(conn, p, variant=variant) for p in payloads]
+    finally:
+        conn.close()
+
+    typer.echo(f"\nScored {len(scored)} screen record(s) from {directory}\n")
+    for s_ in scored:
+        if s_.in_calibration:
+            flag = ""
+        elif not s_.is_month_entry:
+            flag = "  [not the month's first trading day — excluded]"
+        elif not s_.provenance_verified:
+            flag = "  [not committed before its outcome — excluded]"
+        else:
+            flag = "  [nothing scored yet]"
+        typer.echo(
+            f"  {s_.as_of}  {s_.scored}/{s_.selected} scored"
+            f"   portfolio {s_.portfolio_return:+7.2%}"
+            f"   worst trade {s_.worst_trade:+8.2%}"
+            f"   net Rs {s_.total_net_rupees:>12,.0f}{flag}"
+        )
+        for symbol, why in sorted(s_.unscored.items()):
+            typer.echo(f"        unscored: {symbol} — {why}")
+
+    frame = running_record(scored)
+    if not frame.empty and frame["cumulative_return"].notna().any():
+        typer.echo("\n  cumulative (in-calibration records only):")
+        for as_of, row in frame[frame["in_calibration"]].iterrows():
+            typer.echo(
+                f"    {as_of}  month {row['portfolio_return']:+7.2%}"
+                f"   cumulative {row['cumulative_return']:+7.2%}"
+            )
+
+    report = gate_3_report(scored)
+    typer.echo(f"\n  GATE 3: {report['verdict']}")
+    typer.echo(
+        f"    {report['months']} eligible month(s)"
+        f"  ({report.get('off_calibration_records', 0)} excluded)"
+    )
+    for why, n in sorted(report.get("excluded_because", {}).items()):
+        typer.echo(f"      {n} — {why}")
+    if report["months"]:
+        typer.echo(
+            f"    mean monthly {report['mean_portfolio_return']:+.2%}"
+            f"   worst {report['worst_month']:+.2%}"
+            f"   positive {report['positive_months']}/{report['months']}"
+        )
+    typer.echo(f"\n  {report['caveat']}")
+
+
 @app.command(name="run-pipeline")
 def run_pipeline_cmd(
     mode: Annotated[

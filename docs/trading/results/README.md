@@ -14,7 +14,7 @@ same resolution as positive ones, following the research branch's practice.
 | **0** | Does strangle-selling make money net of costs? | ✅ **PASS** | [gate-0-base-strategy.md](gate-0-base-strategy.md) |
 | **1** | Do this project's features beat IV rank alone? | ❌ **FAIL** | [gate-1-feature-filters.md](gate-1-feature-filters.md) |
 | **2** | Ship the daily screen | ✅ **built** | [`mktmtm screen`](screens/) |
-| **3** | Does it hold forward, ≥ 6 months? | ⏳ recording | [screens/](screens/) |
+| **3** | Does it hold forward, ≥ 6 months? | ⏳ **0 of 6** | [gate-3-forward-validation.md](gate-3-forward-validation.md) |
 
 ## Gate 0 in one table
 
@@ -40,6 +40,7 @@ decaying monotonically — 8.30% in 2021 to 1.09% in 2025.
 |---|---|
 | [Gate 0 — base strategy](gate-0-base-strategy.md) | The verdict, the four mandatory disclosures, and five reasons to discount it |
 | [Gate 1 — feature filters](gate-1-feature-filters.md) | The research features do not improve the strategy. Neither does IV rank. |
+| [Gate 3 — forward validation](gate-3-forward-validation.md) | 0 of 6 eligible months. The harness refuses to count a +94.55% backtest as forward evidence. |
 | [The stop loss](stop-loss.md) | Measured at 1.5x/2x/3x. It costs return and buys no tail protection. |
 | [Bugs and fixes](bugs-and-fixes.md) | Four silent defects found in Phase 0, how they were caught, and what they cost |
 

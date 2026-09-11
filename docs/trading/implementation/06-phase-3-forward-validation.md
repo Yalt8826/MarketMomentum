@@ -1,5 +1,17 @@
 # 06 — Phase 3: forward validation
 
+> **Status: harness BUILT 2026-09-11; 0 of 6 eligible months recorded.**
+> Results: [`../results/gate-3-forward-validation.md`](../results/gate-3-forward-validation.md).
+> As built: [`10-phase-2-3-as-built.md`](10-phase-2-3-as-built.md#6b-the-scoring-harness--phase-32-and-33).
+>
+> One deviation from this specification, and it is the important one. §5's
+> fourth criterion — "every record written before its outcome, verifiable by
+> commit date" — is not a reporting line but the **binding constraint**: it is
+> enforced in code by `committed_at()`, and a record failing it is excluded from
+> the verdict however good its numbers are. Eight backtested screens returning a
+> cumulative +94.55% were excluded on exactly that basis while the harness was
+> being validated.
+
 [← Phase 2](05-phase-2-serving.md) · [Index](README.md) · Next: [Build order →](07-build-order.md)
 
 Everything in Phases 0–2 is **in-sample**: filters, thresholds and parameters all

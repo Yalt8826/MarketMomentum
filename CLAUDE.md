@@ -51,6 +51,7 @@ uv run mktmtm flow-momentum         # Stage 4: does positioning continue? (self-
 uv run mktmtm accumulation          # Stage 5: detect accumulation vs shareholding label
 uv run mktmtm nowcast               # rank symbols for the quarter SEBI has not disclosed yet
 uv run mktmtm screen                # trading tool: today's strangles, priced and risk-capped
+uv run mktmtm score-screens         # Phase 3: score the frozen screen records
 ```
 
 Smoke runs: `make-dataset --limit-symbols RELIANCE,TCS --limit-dates 30`, `process --limit-days 5`,
@@ -207,7 +208,11 @@ Gate 1 — beating IV rank alone — is expected to fail and that prior is recor
 drawdown. **Gate 1 FAILED as predicted**: no feature beats chance, and neither does IV
 rank. **A stop loss was measured at 1.5x/2x/3x and makes every outcome worse.**
 `mktmtm screen` ships the daily tool — ordered by tradeability, not conviction,
-with typed refusals and a frozen dated record. Four silent defects found and fixed on
+with typed refusals and a frozen dated record; `mktmtm score-screens` scores those
+records forward. **Gate 3 is at 0 of 6 eligible months**: a record counts only if it
+entered on the month's FIRST TRADING DAY and was committed to git BEFORE its outcome
+existed — eight backtested screens returning +94.55% cumulative were correctly
+excluded on that basis. Four silent defects found and fixed on
 the way — see `docs/trading/results/`),
 **`docs/understanding/v1/`** (the ground-up explanation of the whole project for a reader
 with no market background: markets → F&O → open interest → the Greeks → the project idea →

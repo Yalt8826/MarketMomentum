@@ -107,13 +107,71 @@ outcome got worse**. Full account: [`../results/stop-loss.md`](../results/stop-l
 It remains in the code as a `run_backtest` parameter, because a negative result
 that cannot be re-run is not reproducible.
 
+## 6b. The scoring harness — Phase 3.2 and 3.3
+
+`serving/scoring.py` plus `mktmtm score-screens` and 15 tests.
+
+**Records are scored by re-running the backtested strategy for their month and
+matching on symbol**, not by reimplementing position management. The screen
+picks strikes with the same `find_options_near_delta` call the backtest uses, on
+the same day's chain, so a first-trading-day entry selects the same contracts. A
+second implementation of the weekly hedge and exit would create exactly the
+divergence hazard this project already guards against between `etl.py` and
+`pipeline/process.py`.
+
+### Eligibility is where the work is
+
+| Condition | Enforced by |
+|---|---|
+| Entered on the month's first trading day | `ScreenResult.is_month_entry` |
+| **Committed to git before its outcome existed** | `committed_at()` vs position expiry |
+| Something actually scored | `scored > 0` |
+
+The second is the gate. Every other criterion can be met by a record written
+after its outcome was known — a backtest wearing a forward test's filename.
+
+**This was demonstrated on the harness itself.** Eight screens generated for
+February–September 2026 and scored returned a mean monthly portfolio return of
+**+11.80%** and a cumulative **+94.55%**. The harness excluded all eight:
+
+```
+GATE 3: INCOMPLETE — 0 of 6 months recorded
+  0 eligible month(s)  (8 excluded)
+    8 — not committed before its outcome
+```
+
+A near-doubling that the tool refuses to count is a stronger demonstration of
+the check than any passing test — though there are tests too, including one
+planting a spectacular unverified month and asserting it does not move the mean.
+
+### Positions that cannot be scored are reported, never dropped
+
+An unscored position carries its reason — no exit price, a degenerate chain, an
+earnings conflict that materialised after the screen ran. Silent omission is how
+two of this project's worst defects survived.
+
+## 7b. The record format gained provenance
+
+`record_payload()` writes a JSON sidecar beside the markdown. The scorer reads
+the sidecar and **never parses the prose**: making the markdown load-bearing
+would mean a reformatting could silently break scoring.
+
+The payload carries `commit`, `is_month_entry`, `first_trading_day`, the risk
+limits in force, and every selected position — the "parameter set in force, by
+name and commit" the Phase 3 spec asks for.
+
+The existing 2026-09-04 record was regenerated to add the sidecar and the
+off-calibration warning. **Its selection is byte-identical** — verified by
+diffing the Selected table before and after — so nothing about the prediction
+changed, only its labelling.
+
 ## 8. What is not done
 
 | | |
 |---|---|
 | **Sector data** | Not in the catalog; the sector cap is inert (§5) |
 | **Streamlit page** | The CLI ships; the UI page does not |
-| **Phase 3 verdict** | Needs ≥ 6 monthly records. One exists. |
+| **Phase 3 verdict** | **0 of 6 eligible months.** One record exists and is excluded — it entered on 2026-09-04, not the month's first trading day (2026-09-01). First eligible record: October 2026. |
 | **Cost rates vs a contract note** | Brokerage is 57.9% of costs and is assumed at ₹20 flat |
 
 ## 9. Running it
@@ -121,7 +179,12 @@ that cannot be re-run is not reproducible.
 ```bash
 uv run mktmtm run-pipeline --mode no-etl        # refresh
 uv run mktmtm screen --capital 1000000 --max-positions 10
+# On the FIRST TRADING DAY of the month — any other day is off-calibration:
 uv run mktmtm screen --out docs/trading/results/screens/screen-$(date +%F).md
+git add docs/trading/results/screens/ && git commit -m "screen: $(date +%F)"
+#                                       ^ the commit IS the forward evidence
+
+uv run mktmtm score-screens          # any time after an expiry
 ```
 
 [← Phase 1 as built](09-phase-1-as-built.md) · [Index](README.md)

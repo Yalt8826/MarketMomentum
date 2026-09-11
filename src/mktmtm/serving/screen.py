@@ -29,6 +29,7 @@ See ``docs/trading/implementation/05-phase-2-serving.md``.
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 from dataclasses import dataclass, field
@@ -59,6 +60,7 @@ __all__ = [
     "apply_risk_limits",
     "build_candidate",
     "run_screen",
+    "record_payload",
     "write_screen_record",
     "ScreenRecordExists",
 ]
@@ -141,6 +143,16 @@ class ScreenResult:
     selected: list[Candidate]
     refusals: dict[str, list[str]]
     limits: RiskLimits
+    #: Is ``as_of`` the first trading day of its month?
+    #:
+    #: The backtested strategy enters on the first trading day and holds to the
+    #: scheduled exit. A screen run on any other day produces a position whose
+    #: behaviour was **never measured** — shorter-dated, different strikes, and
+    #: drawn from a different distribution than the +4.56% / -37.27% figures
+    #: describe. Recorded so Phase 3 can exclude such records from Gate 3
+    #: rather than quietly averaging them in.
+    is_month_entry: bool = True
+    first_trading_day: date | None = None
 
     @property
     def total_margin(self) -> float:
@@ -328,6 +340,21 @@ def run_screen(
         cursor.execute("SELECT max(date) FROM option_metrics")
         as_of = cursor.fetchone()[0]
 
+    cursor.execute(
+        "SELECT min(date) FROM option_metrics "
+        "WHERE date_trunc('month', date) = date_trunc('month', %s::date)",
+        (as_of,),
+    )
+    first_trading_day = cursor.fetchone()[0]
+    is_month_entry = first_trading_day == as_of
+    if not is_month_entry:
+        logger.warning(
+            "screen as_of %s is not the first trading day of its month (%s); "
+            "the resulting position is outside the backtested calibration",
+            as_of,
+            first_trading_day,
+        )
+
     if symbols is None:
         catalog = load_fno_catalog()
         symbols = sorted(
@@ -374,6 +401,7 @@ def run_screen(
     return ScreenResult(
         as_of=as_of, candidates=candidates, selected=selected,
         refusals=refusals, limits=limits,
+        is_month_entry=is_month_entry, first_trading_day=first_trading_day,
     )
 
 
@@ -402,6 +430,58 @@ _DISCLOSURE = """\
 """
 
 
+def _git_commit() -> str:
+    """The commit the record was written at, or ``"unknown"``.
+
+    Provenance the Phase 3 spec asks for by name: a record whose code version
+    cannot be established cannot be reproduced, and "the parameter set in force"
+    means nothing without it.
+    """
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5, check=False,
+        )
+        return out.stdout.strip() or "unknown"
+    except Exception:  # noqa: BLE001 - provenance must never break a write
+        return "unknown"
+
+
+def record_payload(result: ScreenResult) -> dict[str, Any]:
+    """Machine-readable form of a screen, for the scorer.
+
+    The markdown record is the dated commitment; this is what
+    ``serving.scoring`` reads. Parsing the markdown back would make the
+    record's prose load-bearing, and a reformatting would then silently break
+    scoring.
+    """
+    return {
+        "as_of": result.as_of.isoformat(),
+        "commit": _git_commit(),
+        "is_month_entry": result.is_month_entry,
+        "first_trading_day": (
+            result.first_trading_day.isoformat() if result.first_trading_day else None
+        ),
+        "limits": {
+            "capital": result.limits.capital,
+            "max_positions": result.limits.max_positions,
+            "max_margin_fraction": result.limits.max_margin_fraction,
+            "max_per_sector": result.limits.max_per_sector,
+            "min_leg_volume": result.limits.min_leg_volume,
+        },
+        "totals": {
+            "selected": len(result.selected),
+            "candidates": len(result.candidates),
+            "margin": result.total_margin,
+            "net_credit": result.total_credit,
+        },
+        "selected": [c.as_row() for c in result.selected],
+        "refusals": {k: sorted(v) for k, v in result.refusals.items()},
+    }
+
+
 def write_screen_record(result: ScreenResult, path: Any, overwrite: bool = False) -> Any:
     """Write a dated, committed record of today's selection.
 
@@ -423,12 +503,30 @@ def write_screen_record(result: ScreenResult, path: Any, overwrite: bool = False
         )
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    payload = record_payload(result)
+    calibration = (
+        "Entered on the first trading day of the month, matching the backtested "
+        "strategy."
+        if result.is_month_entry
+        else (
+            f"⚠️ **Off-calibration.** The first trading day of this month was "
+            f"{result.first_trading_day}; this record entered on {result.as_of}. "
+            f"The backtested strategy always enters on the first trading day, so "
+            f"this position's behaviour was never measured and it is **excluded "
+            f"from Gate 3**."
+        )
+    )
+
     lines = [
         f"# Screen — {result.as_of}",
         "",
         f"**Written {result.as_of}, before any outcome exists.** "
         f"{len(result.selected)} positions selected from {len(result.candidates)} "
         f"tradeable candidates.",
+        "",
+        calibration,
+        "",
+        f"Code: `{payload['commit']}`",
         "",
         f"Capital ₹{result.limits.capital:,.0f} · margin cap "
         f"{result.limits.max_margin_fraction:.0%} · max {result.limits.max_positions} "
@@ -457,5 +555,7 @@ def write_screen_record(result: ScreenResult, path: Any, overwrite: bool = False
     lines += ["", _DISCLOSURE]
 
     path.write_text("\n".join(lines) + "\n")
-    logger.info("screen record written to %s", path)
+    # Sidecar beside the commitment: the scorer reads this, never the prose.
+    path.with_suffix(".json").write_text(json.dumps(payload, indent=2) + "\n")
+    logger.info("screen record written to %s (+ .json)", path)
     return path
