@@ -201,7 +201,10 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 `feat/vol-selling-strategy` — turning the project into a usable tool. Separate line of
 work from the research: the detector cannot be traded (score -> forward return +0.0200,
 11/19 quarters), so this sells magnitude instead of predicting direction. Four gates;
-Gate 1 — beating IV rank alone — is expected to fail and that prior is recorded),
+Gate 1 — beating IV rank alone — is expected to fail and that prior is recorded.
+**Gate 0 PASSED** 2026-09-11: +4.56% mean return on margin, 6/6 years positive, -37.27%
+max drawdown; four silent defects found and fixed on the way — see
+`docs/trading/results/`),
 **`docs/understanding/v1/`** (the ground-up explanation of the whole project for a reader
 with no market background: markets → F&O → open interest → the Greeks → the project idea →
 data → pipeline → features → the six stages → results → the ten silent defects. Written from

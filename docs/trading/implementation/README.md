@@ -32,12 +32,14 @@ days, with retail on the other side.
 | 05 | [Phase 2 — serving](05-phase-2-serving.md) | The daily screen and its risk controls |
 | 06 | [Phase 3 — forward validation](06-phase-3-forward-validation.md) | Frozen monthly records, on the nowcast precedent |
 | 07 | [Build order](07-build-order.md) | Task list: files, tests, gates |
+| 08 | [Phase 0 as built](08-phase-0-as-built.md) | ✅ What was actually written, and where it deviates from the plan |
 
 ## Results so far
 
 | Gate | Verdict | |
 |---|---|---|
 | **0** — does the base strategy make money? | ✅ **PASS** | [gate-0-base-strategy.md](../results/gate-0-base-strategy.md) |
+| — four silent defects found on the way | fixed | [bugs-and-fixes.md](../results/bugs-and-fixes.md) |
 | **1** — do our features beat IV rank? | not run | |
 
 Gate 0: +4.56% mean return on margin per trade, positive in 6 of 6 years,
