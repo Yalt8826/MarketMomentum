@@ -1,6 +1,6 @@
 # Trading tool — results
 
-**Branch:** `feat/vol-selling-strategy`
+**Branch:** `feat/vol-selling-strategy` · [← the whole story in one page](../README.md)
 
 Outcomes from the volatility-selling work. Negative results are recorded at the
 same resolution as positive ones, following the research branch's practice.
@@ -42,7 +42,7 @@ decaying monotonically — 8.30% in 2021 to 1.09% in 2025.
 | [Gate 1 — feature filters](gate-1-feature-filters.md) | The research features do not improve the strategy. Neither does IV rank. |
 | [Gate 3 — forward validation](gate-3-forward-validation.md) | 0 of 6 eligible months. The harness refuses to count a +94.55% backtest as forward evidence. |
 | [The stop loss](stop-loss.md) | Measured at 1.5x/2x/3x. It costs return and buys no tail protection. |
-| [Bugs and fixes](bugs-and-fixes.md) | Four silent defects found in Phase 0, how they were caught, and what they cost |
+| [Bugs and fixes](bugs-and-fixes.md) | **Six** silent defects, how each was caught, and what each cost |
 
 ## The finding most worth carrying
 

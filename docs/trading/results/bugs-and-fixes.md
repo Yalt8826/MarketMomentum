@@ -2,9 +2,14 @@
 
 [Results index](README.md) · [Gate 0 verdict](gate-0-base-strategy.md)
 
-Four defects were found while making the backtester's P&L economically real.
-**All four were silent**: none raised an exception, none failed a run, and two
-had been dropping or distorting data since before this branch existed.
+Six defects were found across Phases 0 to 3. **All six were silent**: none
+raised an exception, none failed a run, and two had been dropping or distorting
+data since before this branch existed.
+
+Defects 1–4 came out of making the backtester's P&L economically real. Defects
+5 and 6 surfaced later, during the stop-loss measurement, and are the more
+instructive pair — both would have produced a *published number* rather than a
+crash.
 
 They are collected here because the *method* that found them transfers, and
 because three of the four are visible only from the tail of a distribution
@@ -249,6 +254,92 @@ A Gate 0 disclosure was wrong by 23 percentage points, and nothing indicated it.
 
 ---
 
+## Defect 5 — the variant was unset on skipped months
+
+**Found by** reading a row count that could not be true.
+
+### What was wrong
+
+`result["variant"]` was set inside `price_result()` — which a **skipped month
+never reaches**, because a month with no trading days or no exit price returns
+before pricing.
+
+So every variant run wrote its skipped months under the *default* variant. Three
+stop-loss runs silently merged their skip taxonomies into the base run's.
+
+### How it surfaced
+
+A count that was arithmetically impossible:
+
+```
+variant    rows   priced
+stop1.5    7729     7729     ← every row priced, no skips at all
+base      15096     7706
+```
+
+A backtest over 15,096 candidate symbol-months cannot produce zero skips. The
+base run showed 7,390 of them; `stop1.5` showed none, because they had all been
+written as `base`.
+
+### Why it mattered
+
+The skip taxonomy is a **Gate 0 disclosure**. Had a stop variant been promoted,
+its "51% of months trade" figure would have been silently wrong — and this is
+the second time in this branch that a skip-handling bug corrupted exactly that
+statistic (see Defect 4).
+
+### The fix
+
+Set `variant` at function entry, alongside `symbol`/`year`/`month`, rather than
+during pricing. Regression test included.
+
+> **Lesson:** metadata that identifies a row must be attached where the row is
+> *created*, not where it is *completed*. Any early return is a path that skips
+> the late assignment.
+
+---
+
+## Defect 6 — an unequal-sample comparison that looked like a finding
+
+Not a code defect. A **measurement** defect, and the most dangerous kind here:
+it produced a plausible, dramatic, publishable number.
+
+### What it looked like
+
+The first stop-loss comparison showed June 2023 at **−56.79%** under a 3× stop
+against **+4.76%** for base. A stop that turns a positive month into a −57%
+catastrophe is a striking result, and it is the sort of thing that gets written
+up.
+
+### What it was
+
+| 2023-06 | base | stop3 |
+|---|---|---|
+| Rows | 222 | 8 |
+| **Priced trades** | **2** | **8** |
+
+The stop provides an exit *before* the scheduled exit date, so months whose
+exit-day lookup fails under base — the 191 "Missing Exit Price" skips — get
+priced under the stop variants. **The comparison was measuring a different set
+of trades, not a different strategy.**
+
+On the common set of 7,706 trades the effect vanishes: worst month −16.12%
+against −16.26%.
+
+### This is a repeat
+
+The research branch hit the identical trap in Stage 1, scoring a calendar
+baseline on 1,004 rows against flow models' 556. Same fix: restrict to the
+common set.
+
+> **Lesson:** when a change appears to help or harm dramatically, check whether
+> it changed *which observations exist* before believing it changed their
+> outcomes. Any intervention that alters eligibility — a stop, a filter, a
+> different exit rule — can do this, and the resulting number is plausible in
+> both directions.
+
+---
+
 ## What the fixes did to the answer
 
 | Stage | Mean return | Worst trade |
@@ -289,7 +380,16 @@ along with fictional losses.
    identical errors scrolled past in every run.
 8. **Cross-check independent implementations.** The P&L fix is verified against a
    separate code path rather than a constant.
+9. **Attach identity where a row is created, not where it is completed.** Every
+   early return is a path that skips a late assignment (Defect 5).
+10. **A dramatic result is a reason to check the denominator.** Before believing
+    an intervention changed outcomes, check that it did not change which
+    observations exist (Defect 6).
 
 These extend the [research branch's own catalogue of silent
-defects](../../understanding/v1/15-bugs-and-lessons.md), which now stands at
-fourteen across the project.
+defects](../../understanding/v1/15-bugs-and-lessons.md). The project's running
+total is **sixteen**, of which exactly one crashed.
+
+That ratio is the argument for everything else in this repository — the health
+gate, the placebo, the leakage tripwire, the common-set discipline, and the
+habit of chasing an impossible number instead of accepting a plausible one.

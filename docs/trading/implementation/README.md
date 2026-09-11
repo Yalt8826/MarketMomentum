@@ -1,5 +1,7 @@
 # Trading tool — implementation
 
+[← the whole story in one page](../README.md)
+
 **Branch:** `feat/vol-selling-strategy` · **Status:** specification, nothing built.
 
 Turning MktMtm into something a trader can use. This is a **separate line of

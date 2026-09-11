@@ -199,6 +199,8 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+**`docs/trading/README.md`** (**start here for the trading branch** — the whole story in
+one page: the four gates, the product, the six silent defects, and the honest limits),
 **`docs/trading/implementation/`** (the volatility-selling pivot, on branch
 `feat/vol-selling-strategy` — turning the project into a usable tool. Separate line of
 work from the research: the detector cannot be traded (score -> forward return +0.0200,
