@@ -84,6 +84,14 @@ ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS rates_effective_from DATE;
 ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS slippage_fraction DOUBLE PRECISION;
 ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS margin_pct DOUBLE PRECISION;
 
+-- A month with no trading days has no entry_date, and the original table
+-- declared that column NOT NULL — so every such row was REJECTED on insert.
+-- The failure was logged per row and swallowed (the writer logs and keeps
+-- going), so 3,308 months simply never appeared in the table and the skip
+-- taxonomy silently under-reported. CREATE TABLE IF NOT EXISTS cannot repair
+-- this on an existing table; the constraint has to be dropped explicitly.
+ALTER TABLE backtest_results ALTER COLUMN entry_date DROP NOT NULL;
+
 -- Rebuild the primary key to include `variant`, if it does not already.
 DO $$
 BEGIN

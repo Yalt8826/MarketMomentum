@@ -31,13 +31,20 @@ def _opt(
     strike: float,
     delta: float,
     settle: float,
+    volume: float = 1_000.0,
 ) -> dict:
+    """One chain element.
+
+    ``volume`` defaults to a traded contract because selection now requires
+    evidence of a real transaction; tests of the liquidity gate override it.
+    """
     return {
         "type": typ,
         "expiry": expiry,
         "strike": strike,
         "delta": delta,
         "settle": settle,
+        "volume": volume,
     }
 
 
@@ -236,9 +243,9 @@ def test_find_option_near_price_requires_positive_price() -> None:
     expiry = date(2025, 10, 28)
     expiry_str = expiry.strftime("%d-%b-%Y")
     chain: list[dict] = [
-        {"type": "CE", "expiry": expiry_str, "strike": 24000.0, "settle": 0.0},
-        {"type": "CE", "expiry": expiry_str, "strike": 24500.0, "settle": -5.0},
-        {"type": "CE", "expiry": expiry_str, "strike": 25000.0, "settle": 30.0},
+        {"type": "CE", "expiry": expiry_str, "strike": 24000.0, "settle": 0.0, "volume": 100},
+        {"type": "CE", "expiry": expiry_str, "strike": 24500.0, "settle": -5.0, "volume": 100},
+        {"type": "CE", "expiry": expiry_str, "strike": 25000.0, "settle": 30.0, "volume": 100},
     ]
 
     best = find_option_near_price(chain, expiry, 10.0, "CE")
@@ -628,3 +635,163 @@ def test_adjustment_legs_are_recorded_for_the_cost_model() -> None:
     for bought_back, resold in legs:
         assert bought_back > 0
         assert resold > 0
+
+
+# ────────────────────── liquidity gate on selection ─────────────────────────
+
+
+def _chain_with_placeholder_strikes() -> list[dict]:
+    """A chain reproducing the NMDC 2022-10-25 defect.
+
+    Deep ITM calls all carry an identical placeholder settle far above what the
+    strike is worth, with zero volume, zero OI and a zero delta — NSE assigns a
+    settlement price to every listed strike whether or not it traded.
+    """
+    expiry_str = date(2025, 9, 25).strftime("%d-%b-%Y")
+    chain: list[dict] = []
+    for strike in (72.5, 80.0, 90.0, 100.0):  # deep ITM, never traded
+        opt = _opt("CE", expiry_str, strike, 0.0, 130.75)
+        opt["volume"] = 0
+        opt["oi"] = 0
+        chain.append(opt)
+    for strike, delta, settle in ((135.0, 0.20, 2.10), (140.0, 0.12, 1.05)):
+        opt = _opt("CE", expiry_str, strike, delta, settle)
+        opt["volume"] = 5_000
+        opt["oi"] = 40_000
+        chain.append(opt)
+    return chain
+
+
+def test_untraded_placeholder_strikes_are_not_selectable_by_price() -> None:
+    """Regression: the defect that produced losses of 16x the margin posted.
+
+    Asking for a call near 130 must not return a never-traded strike whose
+    settle is a flat placeholder; it returns the closest contract that actually
+    traded instead.
+    """
+    chain = _chain_with_placeholder_strikes()
+
+    picked = find_option_near_price(chain, date(2025, 9, 25), 130.0, "CE")
+
+    assert picked is not None
+    assert picked["volume"] > 0
+    assert picked["settle"] != 130.75
+
+
+def test_untraded_strikes_are_not_selectable_by_delta_either() -> None:
+    chain = _chain_with_placeholder_strikes()
+
+    picked = find_options_near_delta(chain, date(2025, 9, 25), 0.20, "CE")
+
+    assert picked is not None
+    assert picked["volume"] > 0
+    assert picked["strike"] == 135.0
+
+
+def test_liquidity_gate_can_be_disabled_for_comparison() -> None:
+    """The old behaviour stays reachable, so the fix's effect is measurable."""
+    chain = _chain_with_placeholder_strikes()
+
+    picked = find_option_near_price(
+        chain, date(2025, 9, 25), 130.0, "CE", require_liquidity=False
+    )
+
+    assert picked is not None
+    assert picked["settle"] == 130.75  # the placeholder, as before
+
+
+# ──────────────────── no-arbitrage bound on chain prices ────────────────────
+
+
+def _corrupt_chain(spot: float = 130.71) -> list[dict]:
+    """The NMDC 2022-10-25 defect: the underlying's price written into every
+    option's settle, with every delta at 0.0 because IV could not converge.
+
+    Heavily traded strikes are affected too, so a volume filter alone does not
+    catch it — which is why the no-arbitrage bound exists.
+    """
+    expiry_str = date(2025, 9, 25).strftime("%d-%b-%Y")
+    chain: list[dict] = []
+    for strike in (117.5, 130.0, 137.5):
+        for typ in ("CE", "PE"):
+            opt = _opt(typ, expiry_str, strike, 0.0, 130.75, volume=2_492)
+            chain.append(opt)
+    return chain
+
+
+def test_a_degenerate_chain_is_detected() -> None:
+    """One settle across every contract is a corrupt day, not a price surface.
+
+    Neither obvious per-contract filter catches it: the affected strikes traded
+    heavily, and the corrupt value sits at 99.97% of spot — inside any
+    no-arbitrage tolerance loose enough for a legitimate deep ITM call. The
+    degeneracy itself is the signature.
+    """
+    from mktmtm.backtest.strangle import chain_is_degenerate
+
+    assert chain_is_degenerate(_corrupt_chain() * 4)
+
+
+def test_a_healthy_chain_is_not_flagged_as_degenerate() -> None:
+    from mktmtm.backtest.strangle import chain_is_degenerate
+
+    assert not chain_is_degenerate(_synthetic_chain(date(2025, 9, 25), [100.0, 110.0, 120.0]) * 2)
+
+
+def test_a_short_chain_is_not_judged() -> None:
+    """Too few contracts to distinguish corruption from a thin listing."""
+    from mktmtm.backtest.strangle import chain_is_degenerate
+
+    assert not chain_is_degenerate(_corrupt_chain()[:4])
+
+
+def test_a_put_marked_above_its_strike_is_rejected() -> None:
+    """A put can never be worth more than its strike."""
+    chain = _corrupt_chain()
+
+    picked = get_option_data(chain, date(2025, 9, 25), 117.5, "PE", spot=130.71)
+
+    assert picked is None  # settle 130.75 exceeds the 117.5 strike
+
+
+def test_the_bound_is_not_applied_without_a_spot() -> None:
+    """A corruption filter must not silently reject good data when it cannot
+    judge — so an unknown spot means no opinion."""
+    chain = _corrupt_chain()
+
+    assert get_option_data(chain, date(2025, 9, 25), 117.5, "PE") is not None
+
+
+def test_legitimate_deep_itm_prices_survive_the_bound() -> None:
+    """The bound must not reject real in-the-money options."""
+    expiry_str = date(2025, 9, 25).strftime("%d-%b-%Y")
+    # Spot 130, strike 100: a call worth ~31 is ordinary and well under spot.
+    chain = [_opt("CE", expiry_str, 100.0, 0.92, 31.20, volume=500)]
+
+    picked = get_option_data(chain, date(2025, 9, 25), 100.0, "CE", spot=130.0)
+
+    assert picked is not None
+    assert picked["settle"] == 31.20
+
+
+def test_degeneracy_is_detected_within_the_traded_expiry() -> None:
+    """IOC 2022-06-29: only the expiring series was corrupt.
+
+    146 of 436 rows carried the spot price, all in the 30-Jun expiry, while
+    July and August were priced normally. A whole-chain test sees 193 distinct
+    settles and passes it — so the check must look at the expiry being traded.
+    """
+    from mktmtm.backtest.strangle import chain_is_degenerate
+
+    near, far = date(2025, 9, 25), date(2025, 10, 30)
+    chain = [
+        _opt(t, near.strftime("%d-%b-%Y"), k, 0.0, 109.80, volume=9)
+        for k in (100.0, 105.0, 111.0, 120.0, 127.0, 135.0)
+        for t in ("CE", "PE")
+    ]
+    chain += _synthetic_chain(far, [100.0, 110.0, 120.0, 130.0])
+
+    assert chain_is_degenerate(chain, near)
+    assert not chain_is_degenerate(chain, far)
+    # The whole-chain view is fooled — which is the point.
+    assert not chain_is_degenerate(chain)

@@ -57,6 +57,7 @@ __all__ = [
     "find_options_near_delta",
     "find_weekly_hedge_dates",
     "get_metrics_for_day",
+    "chain_is_degenerate",
     "get_option_data",
     "get_trading_days_in_range",
     "insert_backtest_result",
@@ -233,11 +234,19 @@ def find_options_near_delta(
     expiry_date: date,
     target_delta: float,
     option_type: str,
+    *,
+    require_liquidity: bool = True,
+    spot: float | None = None,
 ) -> dict[str, Any] | None:
     """Find the option (CE or PE) closest to the target delta for a given expiry.
 
     Only options with a finite delta, numeric strike and numeric settle are
     eligible; the closest by absolute delta difference wins.
+
+    ``require_liquidity`` additionally demands the contract actually traded that
+    day (:func:`_is_tradeable`). A 20-delta strike that never traded cannot be
+    sold at its settlement mark, and for deep strikes that mark is a placeholder
+    rather than a price.
     """
     if not option_chain or not expiry_date:
         return None
@@ -255,6 +264,8 @@ def find_options_near_delta(
             and math.isfinite(delta)
             and isinstance(strike, (int, float))
             and isinstance(settle, (int, float))
+            and (not require_liquidity or _is_tradeable(opt))
+            and _is_plausible_price(opt, spot)
         ):
             relevant_options.append(opt)
 
@@ -269,8 +280,15 @@ def get_option_data(
     expiry_date: date,
     strike_price: float,
     option_type: str,
+    *,
+    spot: float | None = None,
 ) -> dict[str, Any] | None:
-    """Extract the specific option from the chain by expiry, strike and type."""
+    """Extract the specific option from the chain by expiry, strike and type.
+
+    With ``spot`` supplied, a row violating the no-arbitrage bounds is treated
+    as absent rather than returned — an exit priced off a corrupt mark is a
+    fabricated P&L, and a missing exit is at least visible as a skip.
+    """
     if not option_chain or not expiry_date or strike_price is None:
         return None
     target_expiry_str = expiry_date.strftime("%d-%b-%Y")
@@ -285,9 +303,128 @@ def get_option_data(
             and math.isfinite(settle)
             and isinstance(delta, (int, float))
             and math.isfinite(delta)
+            and _is_plausible_price(opt, spot)
         ):
             return opt
     return None
+
+
+def _is_tradeable(opt: dict[str, Any]) -> bool:
+    """Did this contract actually trade today?
+
+    NSE assigns a settlement price to every listed strike, including ones that
+    never traded — and for deep in-the-money strikes that price is a flat
+    placeholder rather than a valuation. Measured on NMDC 2022-10-25: every call
+    from strike 72.5 to 100 carried an identical settle of 130.75 against a spot
+    of 130.71, all with ``volume = 0``, ``oi = 0`` and ``delta = 0.0``.
+
+    Selecting one of those is not optimistic pricing, it is fiction: the
+    backtester sold a "130.75" call and marked it at the same placeholder later,
+    producing losses of up to 16x the margin posted. 32 of 7,683 trades (0.4%)
+    were contaminated this way, for -Rs 5.7M.
+
+    So selection requires evidence of a real transaction. Open interest alone is
+    not enough — a position can exist without a price being struck today.
+    """
+    volume = opt.get("volume")
+    return isinstance(volume, (int, float)) and math.isfinite(volume) and volume > 0
+
+
+#: An expiry with fewer distinct settle values than this is not a price surface.
+_MIN_DISTINCT_SETTLES = 2
+
+#: Bhavcopy's expiry format, shared by every chain lookup here.
+_EXPIRY_FMT = "%d-%b-%Y"
+
+
+def chain_is_degenerate(
+    option_chain: list[dict[str, Any]], expiry_date: date | None = None
+) -> bool:
+    """Does one expiry carry a single price for every contract in it?
+
+    **The defect.** On NMDC 2022-10-25 every element of the chain — 206 rows
+    across strikes 72.5 to 157.5 — carried an identical settle of 130.75 against
+    a spot of 130.71. The underlying's price had been written into every
+    option's premium, and every delta was 0.0 because the IV solver cannot
+    converge on prices that make no sense.
+
+    **Why the test is per expiry.** IOC 2022-06-29 is the same defect in
+    partial form: 146 of 436 rows carry the spot price, and they are exactly the
+    contracts of the expiring 30-Jun series, while July and August are priced
+    normally. A whole-chain test sees 193 distinct settles and passes it.
+    Checking the expiry actually being traded catches both shapes.
+
+    It is rare and it is not random: **47 of 213,379 symbol-days (0.022%)** are
+    degenerate across the entire chain, clustered on particular dates (nine
+    symbols share 2025-07-31, five share 2025-05-29), which points at a feed or
+    parse failure for a whole day rather than anything symbol-specific.
+
+    Neither obvious per-contract filter catches it. Volume does not: affected
+    strikes include ones with 2,492 lots traded. The no-arbitrage bound does not
+    either, because the corrupt value sits at 99.97% of spot — inside any
+    tolerance loose enough for a legitimate deep in-the-money call. What
+    identifies it is the degeneracy itself.
+
+    A month touching such an expiry is skipped rather than priced: one such
+    trade lost 14x the margin posted, and a handful of fabricated catastrophes
+    distorts exactly the tail statistics that decide whether a short-strangle
+    book is usable.
+    """
+    if not option_chain:
+        return False
+    rows = option_chain
+    if expiry_date is not None:
+        target = expiry_date.strftime(_EXPIRY_FMT)
+        rows = [opt for opt in option_chain if opt.get("expiry") == target]
+    if len(rows) < 10:
+        return False
+    settles = {
+        opt.get("settle")
+        for opt in rows
+        if isinstance(opt.get("settle"), (int, float))
+    }
+    return len(settles) < _MIN_DISTINCT_SETTLES
+
+
+#: Tolerance on the no-arbitrage price bounds. ``settle`` is an official mark
+#: rather than a transacted price, so a small overshoot is legitimate; 5% is far
+#: below the scale of the defect this catches (a call marked at 100% of spot).
+_PRICE_BOUND_TOLERANCE = 0.05
+
+
+def _is_plausible_price(opt: dict[str, Any], spot: float | None) -> bool:
+    """Does this contract's settle respect the no-arbitrage bounds?
+
+    A call can never be worth more than the underlying, and a put never more
+    than its strike. Violating either is not an aggressive quote, it is a
+    corrupt row.
+
+    **The defect this catches.** On NMDC 2022-10-25 *every* element of the
+    chain carried an identical settle of 130.75 against a spot of 130.71 — the
+    underlying's price written into every option's premium — with every delta
+    at 0.0 because the IV solver could not converge on prices that make no
+    sense. Heavily traded strikes were affected too (CE 135 had 2,492 lots
+    traded), so a volume filter alone does not catch it.
+
+    Selling a "130.75" call struck at 137.5 and marking it at the same
+    placeholder later produced a loss of 16x the margin posted. Such days are
+    rare — 2 of 2,964 symbol-days sampled in October 2022 — but a handful of
+    fabricated catastrophes is enough to move the tail statistics that decide
+    whether this strategy is usable.
+
+    Returns ``True`` when ``spot`` is unknown: this is a corruption filter, not
+    a valuation model, and it must not silently reject good data.
+    """
+    if spot is None or not math.isfinite(spot) or spot <= 0:
+        return True
+    settle = opt.get("settle")
+    strike = opt.get("strike")
+    if not isinstance(settle, (int, float)) or not math.isfinite(settle):
+        return False
+    if not isinstance(strike, (int, float)) or not math.isfinite(strike):
+        return False
+    ceiling = spot if opt.get("type") == "CE" else strike
+    return settle <= ceiling * (1.0 + _PRICE_BOUND_TOLERANCE)
 
 
 def find_option_near_price(
@@ -295,8 +432,15 @@ def find_option_near_price(
     expiry_date: date,
     target_price: float,
     option_type: str,
+    *,
+    require_liquidity: bool = True,
+    spot: float | None = None,
 ) -> dict[str, Any] | None:
-    """Find the option (CE or PE) whose settle price is closest to a target."""
+    """Find the option (CE or PE) whose settle price is closest to a target.
+
+    ``require_liquidity`` keeps untraded strikes out of the search — see
+    :func:`_is_tradeable` for why that is not optional in practice.
+    """
     if (
         not option_chain
         or not expiry_date
@@ -317,6 +461,8 @@ def find_option_near_price(
             and math.isfinite(settle)
             and settle > 0
             and isinstance(strike, (int, float))
+            and (not require_liquidity or _is_tradeable(opt))
+            and _is_plausible_price(opt, spot)
         ):
             relevant_options.append(opt)
 
@@ -675,8 +821,23 @@ def run_backtest_month(
         return result
 
     entry_option_chain = entry_metrics["option_chain"]
-    call_option = find_options_near_delta(entry_option_chain, expiry_30d, 0.20, "CE")
-    put_option = find_options_near_delta(entry_option_chain, expiry_30d, -0.20, "PE")
+    if chain_is_degenerate(entry_option_chain, expiry_30d):
+        logger.warning(
+            "Degenerate chain for %s on %s (one settle across every contract); "
+            "skipping rather than pricing a fabricated trade.",
+            symbol,
+            entry_date,
+        )
+        result["skipped_reason"] = "Degenerate Chain"
+        insert_backtest_result(cursor, result)
+        return result
+    entry_spot = entry_metrics.get("underlying_price")
+    call_option = find_options_near_delta(
+        entry_option_chain, expiry_30d, 0.20, "CE", spot=entry_spot
+    )
+    put_option = find_options_near_delta(
+        entry_option_chain, expiry_30d, -0.20, "PE", spot=entry_spot
+    )
 
     if not call_option or not put_option:
         logger.warning(
@@ -696,7 +857,7 @@ def run_backtest_month(
     result["call_entry_price"] = call_option["settle"]
     result["put_entry_price"] = put_option["settle"]
     result["entry_credit"] = call_option["settle"] + put_option["settle"]
-    result["entry_spot"] = entry_metrics.get("underlying_price")
+    result["entry_spot"] = entry_spot
     # Gate 0 disclosure: a 20-delta strike that never traded makes the
     # settlement-price fill assumption fiction, regardless of the slippage
     # parameter. Recorded per leg so the share can be reported, not guessed.
@@ -759,10 +920,23 @@ def run_backtest_month(
             continue
 
         hedge_option_chain = hedge_metrics["option_chain"]
+        if chain_is_degenerate(hedge_option_chain, expiry_30d):
+            logger.warning(
+                "Degenerate chain for %s on adjustment date %s; skipping this "
+                "adjustment rather than re-selling against a fabricated price.",
+                symbol,
+                hedge_date,
+            )
+            continue
 
         # Current data for the open legs
-        call_data_hedge = get_option_data(hedge_option_chain, expiry_30d, current_call_strike, "CE")
-        put_data_hedge = get_option_data(hedge_option_chain, expiry_30d, current_put_strike, "PE")
+        hedge_spot = hedge_metrics.get("underlying_price")
+        call_data_hedge = get_option_data(
+            hedge_option_chain, expiry_30d, current_call_strike, "CE", spot=hedge_spot
+        )
+        put_data_hedge = get_option_data(
+            hedge_option_chain, expiry_30d, current_put_strike, "PE", spot=hedge_spot
+        )
 
         if not call_data_hedge or not put_data_hedge:
             logger.warning(
@@ -792,7 +966,7 @@ def run_backtest_month(
             # Re-sell a Call near the current Put price
             target_price = current_put_price
             new_call_option = find_option_near_price(
-                hedge_option_chain, expiry_30d, target_price, "CE"
+                hedge_option_chain, expiry_30d, target_price, "CE", spot=hedge_spot
             )
 
             if new_call_option:
@@ -829,7 +1003,7 @@ def run_backtest_month(
             # Re-sell a Put near the current Call price
             target_price = current_call_price
             new_put_option = find_option_near_price(
-                hedge_option_chain, expiry_30d, target_price, "PE"
+                hedge_option_chain, expiry_30d, target_price, "PE", spot=hedge_spot
             )
 
             if new_put_option:
@@ -875,8 +1049,23 @@ def run_backtest_month(
 
     # Exit prices for the final state of the strangle legs
     exit_option_chain = exit_metrics["option_chain"]
-    call_exit_data = get_option_data(exit_option_chain, expiry_30d, current_call_strike, "CE")
-    put_exit_data = get_option_data(exit_option_chain, expiry_30d, current_put_strike, "PE")
+    if chain_is_degenerate(exit_option_chain, expiry_30d):
+        logger.warning(
+            "Degenerate chain for %s on exit date %s; the month cannot be priced.",
+            symbol,
+            exit_date,
+        )
+        result["skipped_reason"] = "Degenerate Exit Chain"
+        result[_HEDGE_PNL_KEY] = total_adjustment_pnl
+        insert_backtest_result(cursor, result)
+        return result
+    exit_spot = exit_metrics.get("underlying_price")
+    call_exit_data = get_option_data(
+        exit_option_chain, expiry_30d, current_call_strike, "CE", spot=exit_spot
+    )
+    put_exit_data = get_option_data(
+        exit_option_chain, expiry_30d, current_put_strike, "PE", spot=exit_spot
+    )
 
     if not call_exit_data or not put_exit_data:
         logger.warning(
