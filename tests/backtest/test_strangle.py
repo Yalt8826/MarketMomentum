@@ -531,3 +531,98 @@ def test_run_backtest_month_skips_no_suitable_options() -> None:
     result = run_backtest_month("NIFTY", 2025, 9, {"NIFTY"}, cursor)
 
     assert result["skipped_reason"] == "No Suitable Options"
+
+
+# ─────────────────── P&L accounting across an adjustment ────────────────────
+
+
+def _adjusting_month_metrics() -> dict[tuple[str, date], dict]:
+    """A month where the underlying moves enough to force a leg replacement.
+
+    Entry Mon 01-Sep-2025 with a flat chain, then the call side collapses and
+    the put side rises, so the weekly hedge buys the call back cheaply and
+    re-sells a new call near the (expensive) put's price.
+    """
+    days = [date(2025, 9, d) for d in [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16]]
+    expiry = date(2025, 9, 25)
+    expiry_str = expiry.strftime("%d-%b-%Y")
+
+    def chain_at(call_mult: float, put_mult: float) -> list[dict]:
+        rows: list[dict] = []
+        for i, strike in enumerate([24000.0, 24500.0, 25000.0]):
+            rows.append(
+                _opt("CE", expiry_str, strike, 0.15 + 0.025 * i, (40.0 + i * 5) * call_mult)
+            )
+            rows.append(
+                _opt("PE", expiry_str, strike, -(0.20 - 0.025 * i), (50.0 - i * 5) * put_mult)
+            )
+        return rows
+
+    metrics: dict[tuple[str, date], dict] = {}
+    for day in days:
+        # From the first hedge date onward the call is cheap and the put dear.
+        moved = day >= date(2025, 9, 5)
+        metrics[("NIFTY", day)] = {
+            "underlying_price": 24600.0,
+            "interest_rate": 6.5,
+            "expiry_30d": expiry,
+            "upcoming_earning_date": None,
+            "option_chain": chain_at(0.4, 1.6) if moved else chain_at(1.0, 1.0),
+        }
+    return metrics
+
+
+def test_pnl_counts_the_replacement_legs_credit() -> None:
+    """Regression: P&L must sum every leg ever sold, minus its buyback.
+
+    The superseded formula was ``initial_entry_credit - final_exit_cost +
+    total_adjustment_pnl``. Once a leg is replaced that credits the ORIGINAL
+    sale while debiting the REPLACEMENT's buyback, losing the replacement's own
+    credit — so it understated any month that adjusted.
+
+    Checked against ``economics.price_strangle_trade``, which reaches the same
+    figure by a different route: two independent implementations agreeing is a
+    stronger statement than either matching a hand-computed constant.
+    """
+    from mktmtm.backtest.economics import price_strangle_trade
+
+    cursor = FakeCursor(_adjusting_month_metrics())
+
+    result = run_backtest_month("NIFTY", 2025, 9, {"NIFTY"}, cursor)
+
+    assert result.get("skipped_reason") is None
+    legs = result["adjustment_legs"]
+    assert legs, "this fixture must force at least one adjustment"
+
+    # lot_size 1 makes gross rupees equal gross points.
+    independent = price_strangle_trade(
+        entry_call=result["call_entry_price"],
+        entry_put=result["put_entry_price"],
+        exit_call=result["call_exit_price"],
+        exit_put=result["put_exit_price"],
+        adjustments=legs,
+        lot_size=1,
+        entry_spot=24_600.0,
+        entry_date=date(2025, 9, 1),
+    )
+    assert result["pnl_points"] == pytest.approx(independent.gross_pnl_rupees)
+
+    # And it differs from the superseded formula by exactly the credit that
+    # formula dropped.
+    superseded = (
+        result["entry_credit"] - result["exit_cost"] + result["hedge_pnl_points"]
+    )
+    assert result["pnl_points"] != pytest.approx(superseded)
+
+
+def test_adjustment_legs_are_recorded_for_the_cost_model() -> None:
+    """Each adjustment is two orders; the cost model needs both premiums."""
+    cursor = FakeCursor(_adjusting_month_metrics())
+
+    result = run_backtest_month("NIFTY", 2025, 9, {"NIFTY"}, cursor)
+
+    legs = result["adjustment_legs"]
+    assert legs
+    for bought_back, resold in legs:
+        assert bought_back > 0
+        assert resold > 0

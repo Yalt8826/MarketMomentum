@@ -53,6 +53,7 @@ from typing import Literal
 __all__ = [
     "CostBreakdown",
     "CostRates",
+    "TradeEconomics",
     "DEFAULT_RATE_SETS",
     "MarginModel",
     "Order",
@@ -60,6 +61,7 @@ __all__ = [
     "apply_slippage",
     "contract_value",
     "order_costs",
+    "price_strangle_trade",
     "resolve_rates",
     "strangle_margin",
     "strangle_orders",
@@ -389,3 +391,127 @@ def apply_slippage(premium: float, side: Side, fraction: float) -> float:
     if side == "buy":
         return premium * (1.0 + fraction)
     raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
+
+
+# ═════════════════════════════ the whole trade ═════════════════════════════
+
+
+@dataclass(frozen=True)
+class TradeEconomics:
+    """One strangle priced end to end: points in, rupees and a return out."""
+
+    lot_size: int
+    n_orders: int
+    n_adjustments: int
+    entry_spot: float
+    gross_pnl_rupees: float
+    costs_rupees: float
+    slippage_rupees: float
+    net_pnl_rupees: float
+    margin_rupees: float
+    return_on_margin: float
+    cost_breakdown: CostBreakdown
+    rates_effective_from: date
+    slippage_fraction: float
+    margin_pct: float
+
+    def as_row(self) -> dict[str, object]:
+        """Flat mapping for ``backtest_results``."""
+        return {
+            "lot_size": self.lot_size,
+            "n_orders": self.n_orders,
+            "n_adjustments": self.n_adjustments,
+            "entry_spot": self.entry_spot,
+            "gross_pnl_rupees": self.gross_pnl_rupees,
+            "costs_rupees": self.costs_rupees,
+            "slippage_rupees": self.slippage_rupees,
+            "net_pnl_rupees": self.net_pnl_rupees,
+            "margin_rupees": self.margin_rupees,
+            "return_on_margin": self.return_on_margin,
+            "cost_breakdown": self.cost_breakdown.as_dict(),
+            "rates_effective_from": self.rates_effective_from,
+            "slippage_fraction": self.slippage_fraction,
+            "margin_pct": self.margin_pct,
+        }
+
+
+def price_strangle_trade(
+    *,
+    entry_call: float,
+    entry_put: float,
+    exit_call: float,
+    exit_put: float,
+    adjustments: list[tuple[float, float]],
+    lot_size: int,
+    entry_spot: float,
+    entry_date: date,
+    slippage_fraction: float = 0.0,
+    margin_model: MarginModel = MarginModel(),
+    rate_sets: tuple[CostRates, ...] = DEFAULT_RATE_SETS,
+) -> TradeEconomics:
+    """Price one strangle: slippage, then costs, then a return on margin. Pure.
+
+    Slippage is applied to every leg **first**, because it changes the premiums
+    that costs are then charged on — a sold leg fills lower, so its STT is lower
+    too. Applying costs to the unslipped marks would overstate them slightly and,
+    more importantly, would not be what a contract note shows.
+
+    ``slippage_rupees`` is reported as the *difference* between the clean and
+    slipped gross P&L, so the three money columns decompose exactly:
+    ``net = gross − costs − slippage``, with ``gross`` measured at the marks.
+    """
+    rates = resolve_rates(entry_date, rate_sets)
+
+    clean_gross_points = (entry_call + entry_put) - (exit_call + exit_put)
+    for closed, reopened in adjustments:
+        # Each adjustment banks (sold price − buyback price) on the closed leg
+        # and re-establishes a new one; the reopened premium is credit received.
+        clean_gross_points += reopened - closed
+
+    f = slippage_fraction
+    slipped_entry_call = apply_slippage(entry_call, "sell", f)
+    slipped_entry_put = apply_slippage(entry_put, "sell", f)
+    slipped_exit_call = apply_slippage(exit_call, "buy", f)
+    slipped_exit_put = apply_slippage(exit_put, "buy", f)
+    slipped_adjustments = [
+        (apply_slippage(closed, "buy", f), apply_slippage(reopened, "sell", f))
+        for closed, reopened in adjustments
+    ]
+
+    slipped_gross_points = (slipped_entry_call + slipped_entry_put) - (
+        slipped_exit_call + slipped_exit_put
+    )
+    for closed, reopened in slipped_adjustments:
+        slipped_gross_points += reopened - closed
+
+    orders = strangle_orders(
+        slipped_entry_call,
+        slipped_entry_put,
+        slipped_exit_call,
+        slipped_exit_put,
+        lot_size,
+        slipped_adjustments,
+    )
+    breakdown = trade_costs(orders, rates)
+
+    gross = contract_value(clean_gross_points, lot_size)
+    slippage_cost = gross - contract_value(slipped_gross_points, lot_size)
+    net = gross - breakdown.total - slippage_cost
+    margin = strangle_margin(entry_spot, lot_size, margin_model)
+
+    return TradeEconomics(
+        lot_size=lot_size,
+        n_orders=breakdown.n_orders,
+        n_adjustments=len(adjustments),
+        entry_spot=entry_spot,
+        gross_pnl_rupees=gross,
+        costs_rupees=breakdown.total,
+        slippage_rupees=slippage_cost,
+        net_pnl_rupees=net,
+        margin_rupees=margin,
+        return_on_margin=net / margin if margin > 0 else 0.0,
+        cost_breakdown=breakdown,
+        rates_effective_from=rates.effective_from,
+        slippage_fraction=f,
+        margin_pct=margin_model.total_pct,
+    )

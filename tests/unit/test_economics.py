@@ -256,3 +256,137 @@ def test_order_rejects_a_nonpositive_lot() -> None:
 
 def test_order_turnover_is_premium_times_lot() -> None:
     assert Order(50.0, 500, "sell").turnover == 25_000.0
+
+
+# ───────────────────────────── whole-trade pricing ─────────────────────────
+
+
+def test_trade_economics_decomposes_exactly() -> None:
+    """net = gross - costs - slippage, to the rupee. The columns must add up."""
+    from mktmtm.backtest.economics import price_strangle_trade
+
+    econ = price_strangle_trade(
+        entry_call=22.0,
+        entry_put=20.0,
+        exit_call=8.0,
+        exit_put=7.0,
+        adjustments=[(10.0, 19.0)] * 3,
+        lot_size=500,
+        entry_spot=1_000.0,
+        entry_date=date(2025, 6, 1),
+        slippage_fraction=0.02,
+    )
+
+    assert econ.net_pnl_rupees == pytest.approx(
+        econ.gross_pnl_rupees - econ.costs_rupees - econ.slippage_rupees
+    )
+    assert econ.n_orders == 10
+    assert econ.n_adjustments == 3
+
+
+def test_trade_pnl_counts_every_leg_ever_sold() -> None:
+    """The accounting bug this fixed, pinned.
+
+    Entry CE@50/PE@45; one adjustment buys the call back at 30 and re-sells at
+    58; exit CE@20/PE@25. Leg by leg: (50-30) + (58-20) + (45-25) = 78.
+
+    The superseded formula (initial credit - final exit cost + adjustment PnL)
+    gives 70: it credits the ORIGINAL call sale but debits the REPLACEMENT's
+    buyback, losing the replacement's own 58 of credit.
+    """
+    from mktmtm.backtest.economics import price_strangle_trade
+
+    econ = price_strangle_trade(
+        entry_call=50.0,
+        entry_put=45.0,
+        exit_call=20.0,
+        exit_put=25.0,
+        adjustments=[(30.0, 58.0)],
+        lot_size=1,
+        entry_spot=1_000.0,
+        entry_date=date(2025, 6, 1),
+    )
+
+    assert econ.gross_pnl_rupees == pytest.approx(78.0)
+    assert econ.gross_pnl_rupees != pytest.approx(70.0)
+
+
+def test_slippage_only_ever_reduces_the_result() -> None:
+    from mktmtm.backtest.economics import price_strangle_trade
+
+    kwargs = dict(
+        entry_call=22.0,
+        entry_put=20.0,
+        exit_call=8.0,
+        exit_put=7.0,
+        adjustments=[(10.0, 19.0)],
+        lot_size=500,
+        entry_spot=1_000.0,
+        entry_date=date(2025, 6, 1),
+    )
+    clean = price_strangle_trade(**kwargs, slippage_fraction=0.0)  # type: ignore[arg-type]
+    slipped = price_strangle_trade(**kwargs, slippage_fraction=0.03)  # type: ignore[arg-type]
+
+    assert clean.slippage_rupees == pytest.approx(0.0)
+    assert slipped.slippage_rupees > 0.0
+    assert slipped.net_pnl_rupees < clean.net_pnl_rupees
+    # Gross is measured at the marks, so it is unchanged by a fill assumption.
+    assert slipped.gross_pnl_rupees == pytest.approx(clean.gross_pnl_rupees)
+
+
+def test_margin_sensitivity_changes_the_return_not_the_pnl() -> None:
+    """Margin scales the denominator only — it cannot turn a loss into a gain."""
+    from mktmtm.backtest.economics import MarginModel, price_strangle_trade
+
+    kwargs = dict(
+        entry_call=22.0,
+        entry_put=20.0,
+        exit_call=8.0,
+        exit_put=7.0,
+        adjustments=[],
+        lot_size=500,
+        entry_spot=1_000.0,
+        entry_date=date(2025, 6, 1),
+    )
+    base = price_strangle_trade(**kwargs, margin_model=MarginModel())  # type: ignore[arg-type]
+    heavy = price_strangle_trade(**kwargs, margin_model=MarginModel().scaled(1.25))  # type: ignore[arg-type]
+
+    assert heavy.net_pnl_rupees == pytest.approx(base.net_pnl_rupees)
+    assert heavy.return_on_margin == pytest.approx(base.return_on_margin / 1.25)
+
+
+def test_trade_uses_the_rate_set_in_force_on_the_entry_date() -> None:
+    from mktmtm.backtest.economics import price_strangle_trade
+
+    kwargs = dict(
+        entry_call=22.0,
+        entry_put=20.0,
+        exit_call=8.0,
+        exit_put=7.0,
+        adjustments=[],
+        lot_size=500,
+        entry_spot=1_000.0,
+    )
+    early = price_strangle_trade(**kwargs, entry_date=date(2022, 6, 1))  # type: ignore[arg-type]
+    late = price_strangle_trade(**kwargs, entry_date=date(2025, 6, 1))  # type: ignore[arg-type]
+
+    assert early.rates_effective_from == date(2021, 1, 1)
+    assert late.rates_effective_from == date(2024, 10, 1)
+
+
+def test_a_losing_trade_reports_a_negative_return() -> None:
+    from mktmtm.backtest.economics import price_strangle_trade
+
+    econ = price_strangle_trade(
+        entry_call=22.0,
+        entry_put=20.0,
+        exit_call=80.0,  # the underlying ran through the call strike
+        exit_put=2.0,
+        adjustments=[],
+        lot_size=500,
+        entry_spot=1_000.0,
+        entry_date=date(2025, 6, 1),
+    )
+
+    assert econ.net_pnl_rupees < 0
+    assert econ.return_on_margin < 0

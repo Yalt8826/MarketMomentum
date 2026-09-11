@@ -576,6 +576,9 @@ def run_backtest_month(
     current_call_sold_price = result["call_entry_price"]
     current_put_sold_price = result["put_entry_price"]
     total_adjustment_pnl = 0.0
+    # (bought_back_premium, resold_premium) per adjustment. Each pair is TWO
+    # orders, which is what the cost model charges for.
+    adjustment_legs: list[tuple[float, float]] = []
 
     logger.info(
         "Entry: Sell CE %s @ %.2f (Δ %.2f), Sell PE %s @ %.2f (Δ %.2f). Credit: %.2f",
@@ -662,6 +665,7 @@ def run_backtest_month(
             if new_call_option:
                 current_call_strike = new_call_option["strike"]
                 current_call_sold_price = new_call_option["settle"]
+                adjustment_legs.append((current_call_price, current_call_sold_price))
                 logger.info(
                     "Adjustment (%s): Selling New Call %s @ %.2f (Target Price: %.2f)",
                     hedge_date,
@@ -698,6 +702,7 @@ def run_backtest_month(
             if new_put_option:
                 current_put_strike = new_put_option["strike"]
                 current_put_sold_price = new_put_option["settle"]
+                adjustment_legs.append((current_put_price, current_put_sold_price))
                 logger.info(
                     "Adjustment (%s): Selling New Put %s @ %.2f (Target Price: %.2f)",
                     hedge_date,
@@ -756,12 +761,27 @@ def run_backtest_month(
     result["call_exit_price"] = call_exit_data["settle"]
     result["put_exit_price"] = put_exit_data["settle"]
 
-    # PNL = Initial Credit - Final Exit Cost + PNL from adjustments
+    # PNL is computed leg by leg: every leg ever sold, minus what it cost to
+    # close it.
+    #
+    # The previous formula was `initial_entry_credit - final_exit_cost +
+    # total_adjustment_pnl`, which is wrong as soon as a leg has been replaced:
+    # it credits the ORIGINAL leg's sale while debiting the REPLACEMENT leg's
+    # buyback, so the replacement's own sale credit is never counted. The error
+    # is exactly `(final sold price - original sold price)` per side. Because
+    # the adjustment re-sells near the price of the *losing* leg, replacements
+    # are typically sold higher than the original, so the old formula
+    # systematically UNDERSTATED P&L on any month that adjusted.
     initial_entry_credit = result["call_entry_price"] + result["put_entry_price"]
     final_exit_cost = result["call_exit_price"] + result["put_exit_price"]
-    result["pnl_points"] = initial_entry_credit - final_exit_cost + total_adjustment_pnl
+    result["pnl_points"] = (
+        total_adjustment_pnl
+        + (current_call_sold_price - result["call_exit_price"])
+        + (current_put_sold_price - result["put_exit_price"])
+    )
     result["entry_credit"] = initial_entry_credit
     result["exit_cost"] = final_exit_cost
+    result["adjustment_legs"] = adjustment_legs
 
     logger.info(
         "Exit Strangle: Buy CE %s @ %.2f, Buy PE %s @ %.2f. Cost: %.2f",
