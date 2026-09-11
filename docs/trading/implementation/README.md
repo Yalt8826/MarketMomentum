@@ -33,6 +33,19 @@ days, with retail on the other side.
 | 06 | [Phase 3 — forward validation](06-phase-3-forward-validation.md) | Frozen monthly records, on the nowcast precedent |
 | 07 | [Build order](07-build-order.md) | Task list: files, tests, gates |
 
+## Results so far
+
+| Gate | Verdict | |
+|---|---|---|
+| **0** — does the base strategy make money? | ✅ **PASS** | [gate-0-base-strategy.md](../results/gate-0-base-strategy.md) |
+| **1** — do our features beat IV rank? | not run | |
+
+Gate 0: +4.56% mean return on margin per trade, positive in 6 of 6 years,
+−37.27% max drawdown, breakeven slippage 3.16% per leg. Three silent defects
+were found and fixed while producing it — the worst trade fell from −1,677% to
+−245.8% while the mean moved less than half a point, because the contamination
+was in the tail rather than the average.
+
 ## The four gates
 
 Each can stop the work. All criteria are fixed before any number exists.
