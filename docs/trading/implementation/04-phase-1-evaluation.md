@@ -1,5 +1,10 @@
 # 04 — Phase 1: does the research add anything?
 
+> **Status: RUN 2026-09-11 — FAILED on every criterion.**
+> Full results: [`../results/gate-1-feature-filters.md`](../results/gate-1-feature-filters.md).
+> The prior in §6 was recorded before the run and held. §7 records what actually
+> happened against what this document predicted.
+
 [← Phase 0](03-phase-0-economics.md) · [Index](README.md) · Next: [Phase 2 →](05-phase-2-serving.md)
 
 **Reached only if Gate 0 passes.**
@@ -128,3 +133,54 @@ The write-up should present it exactly that way, in `docs/trading/results/`,
 alongside the research branch's three other negative results.
 
 [← Phase 0](03-phase-0-economics.md) · [Index](README.md) · Next: [Phase 2 →](05-phase-2-serving.md)
+
+---
+
+## 7. Outcome — recorded against the prediction
+
+**Every criterion failed**, and the failure is broader than §6 predicted.
+
+| # | Criterion | Predicted | Observed |
+|---|---|---|---|
+| 1 | Beats unfiltered | uncertain | ❌ marginal, never significant |
+| 2 | **Beats IV rank alone** | **fail** | ❌ none |
+| 3 | Outside the random-filter distribution | uncertain | ❌ none |
+| 4 | Holds in both halves | uncertain | ❌ every feature flips sign across years |
+| 5 | Look-ahead tripwire fires | must pass | ✅ +19.1pp |
+
+### What §6 got right
+
+The prior — "every constructed feature sits at ≤0.05 partial IC against implied
+volatility's own +0.2114, so this gate is expected to fail" — was correct, and
+writing it down first is what makes the null a measurement rather than a
+disappointment.
+
+### What §2 got wrong
+
+This document framed IV rank as **the bar to clear**: the boring explanation
+that works, which our features had to beat. That framing assumed IV rank itself
+works.
+
+**It does not.** At keep = 30% it scores +4.76% against +4.56% unfiltered and a
+chance p95 of **+5.20%** — inside the noise. Out of sample it is *negative*
+(−0.79pp over 37 folds).
+
+So the finding is not "our features lost to the standard heuristic". It is:
+
+> **Selectivity does not help this strategy at all.** Trading every eligible
+> symbol-month is as good as any filter tested.
+
+That is a stronger and more useful result than the one this phase was designed
+to produce, and it changes what Phase 2 should be — see
+[`05-phase-2-serving.md`](05-phase-2-serving.md).
+
+### The check that earned its place
+
+§4 required per-year reporting because Gate 0 found the edge decaying. That
+requirement turned out to be decisive rather than cautionary: pooled over the
+full sample, `ce_ivr` (+1.66pp) and `iv_rv_spread` (+0.88pp) show positive mean
+edges which come **almost entirely from 2021**. A filter fitted on the whole
+window would have inherited that and looked usable.
+
+`fut_basis_excess` swings from **+12.76pp to −11.02pp in consecutive years** —
+the clearest statement available that these are noise, not unstable signals.

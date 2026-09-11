@@ -33,6 +33,7 @@ days, with retail on the other side.
 | 06 | [Phase 3 — forward validation](06-phase-3-forward-validation.md) | Frozen monthly records, on the nowcast precedent |
 | 07 | [Build order](07-build-order.md) | Task list: files, tests, gates |
 | 08 | [Phase 0 as built](08-phase-0-as-built.md) | ✅ What was actually written, and where it deviates from the plan |
+| 09 | [Phase 1 as built](09-phase-1-as-built.md) | ✅ The evaluation harness, and the strictly-prior guarantee it rests on |
 
 ## Results so far
 

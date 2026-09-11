@@ -192,7 +192,11 @@ those two series are filed independently and nothing forces them to oppose.
 ## 6. Limitations, stated plainly
 
 - **Nothing here is a trading edge.** Measured partial correlations around 0.17
-  imply an AUC ceiling near 0.55–0.60.
+  imply an AUC ceiling near 0.55–0.60. This has since been tested directly
+  rather than inferred: the detector's score predicts the next quarter's return
+  at **+0.0200** (11 of 19 quarters), and the features were separately tested as
+  entry filters for an options strategy where **none beat a random filter** —
+  see [`docs/trading/results/`](../../trading/results/README.md).
 - **No true out-of-sample test exists yet.** Subset stability is weaker than an
   independent dataset. The frozen nowcasts are the first genuine one, and they
   are not scorable until November 2026.
