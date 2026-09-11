@@ -197,6 +197,11 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 
 ### Docs
 
+**`docs/trading/implementation/`** (the volatility-selling pivot, on branch
+`feat/vol-selling-strategy` — turning the project into a usable tool. Separate line of
+work from the research: the detector cannot be traded (score -> forward return +0.0200,
+11/19 quarters), so this sells magnitude instead of predicting direction. Four gates;
+Gate 1 — beating IV rank alone — is expected to fail and that prior is recorded),
 **`docs/understanding/v1/`** (the ground-up explanation of the whole project for a reader
 with no market background: markets → F&O → open interest → the Greeks → the project idea →
 data → pipeline → features → the six stages → results → the ten silent defects. Written from

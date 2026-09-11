@@ -1,12 +1,14 @@
-# Volatility-selling strategy — implementation plan
+# 00 — Volatility-selling strategy: the plan
+
+[Index](README.md) · Next: [Handoff from research →](01-handoff-from-research.md)
 
 **Status:** specification. Nothing below is built.
 **Supersedes nothing.** Stages 1–5 stand; this is a separate line of work with a
 different question, a different cadence and a different definition of success.
 
-**Prerequisite reading:** [`../understanding/v1/14-results.md`](../understanding/v1/14-results.md)
+**Prerequisite reading:** [`../../understanding/v1/14-results.md`](../../understanding/v1/14-results.md)
 for what has and has not been established, and
-[`model-06-accumulation-detection.md`](model-06-accumulation-detection.md) for the
+[`model-06-accumulation-detection.md`](../../implementation/model-06-accumulation-detection.md) for the
 evaluation discipline this plan inherits.
 
 ---
@@ -37,7 +39,7 @@ itself negative (−0.047).
 Direction prediction is separately a closed question: the archived XGBoost
 next-day classifier found a thin edge **substantially tied to missingness**
 (rows where the IV solver failed on illiquid or violently-moving names). See
-[`../models/xgboost-direction-model-card.md`](../models/xgboost-direction-model-card.md).
+[`../../models/xgboost-direction-model-card.md`](../../models/xgboost-direction-model-card.md).
 
 ### What is left, and why it is worth trying
 
@@ -379,3 +381,5 @@ ones — but it means the tradeable component would not depend on the research.
 
 Phase 0 is a few hours of work and settles the largest question. Nothing beyond
 it should be built until Gate 0 reports a number.
+
+[Index](README.md) · Next: [Handoff from research →](01-handoff-from-research.md)
