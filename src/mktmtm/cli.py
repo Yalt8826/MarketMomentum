@@ -1091,6 +1091,93 @@ def nowcast_cmd(
         typer.echo(f"\n  record written to {path}")
 
 
+@app.command(name="screen")
+def screen_cmd(
+    capital: Annotated[
+        float, typer.Option("--capital", help="Capital available, in rupees.")
+    ] = 1_000_000.0,
+    max_positions: Annotated[
+        int, typer.Option("--max-positions", min=1, help="Hard cap on concurrent positions.")
+    ] = 10,
+    margin_fraction: Annotated[
+        float, typer.Option("--margin-fraction", help="Max fraction of capital in margin.")
+    ] = 0.5,
+    min_volume: Annotated[
+        int, typer.Option("--min-volume", help="Refuse a leg that traded fewer lots than this.")
+    ] = 1,
+    top: Annotated[int, typer.Option("--top", min=1, help="Rows to show.")] = 15,
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Write a committed markdown record here.")
+    ] = None,
+    overwrite: Annotated[
+        bool, typer.Option("--overwrite", help="Replace a record written today.")
+    ] = False,
+) -> None:
+    """Today's tradeable strangles: priced, capped, and ordered by tradeability.
+
+    NOT ordered by conviction. Gate 1 tested six research features plus implied-
+    volatility rank and none beat a random filter, so there is nothing to rank
+    by. The ordering is net credit per rupee of margin — which positions pay
+    best for the capital they tie up.
+    """
+    import psycopg2
+
+    from mktmtm.serving.screen import RiskLimits, run_screen
+    from mktmtm.storage.db import build_dsn
+
+    limits = RiskLimits(
+        capital=capital,
+        max_positions=max_positions,
+        max_margin_fraction=margin_fraction,
+        min_leg_volume=min_volume,
+    )
+    conn = psycopg2.connect(build_dsn())
+    try:
+        result = run_screen(conn, limits=limits)
+    finally:
+        conn.close()
+
+    typer.echo(f"\nScreen · as of {result.as_of}")
+    typer.echo(
+        f"  {len(result.selected)} selected from {len(result.candidates)} tradeable "
+        f"candidates ({sum(len(v) for v in result.refusals.values())} refused)"
+    )
+    typer.echo(
+        f"  margin committed Rs {result.total_margin:,.0f}"
+        f" ({result.total_margin / limits.capital:.1%} of capital)"
+        f"   net credit Rs {result.total_credit:,.0f}"
+    )
+
+    typer.echo("\n  selected:")
+    for i, c in enumerate(result.selected[:top], 1):
+        loss = "n/a" if c.modelled_loss_rupees != c.modelled_loss_rupees else f"{c.modelled_loss_rupees:>12,.0f}"
+        typer.echo(
+            f"   {i:>3}  {c.symbol:<13} {c.call_strike:>9,.1f}C/{c.put_strike:<9,.1f}P"
+            f"  credit {c.net_credit_rupees:>9,.0f}  margin {c.margin_rupees:>10,.0f}"
+            f"  c/m {c.credit_to_margin:>6.3f}  2s-loss {loss}  vol {c.min_leg_volume:>7,.0f}"
+        )
+
+    typer.echo("\n  refused:")
+    for reason, syms in sorted(result.refusals.items(), key=lambda kv: -len(kv[1]))[:8]:
+        typer.echo(f"   {len(syms):>4}  {reason}")
+
+    typer.echo(
+        "\n  Backtested +4.56% mean return on margin, -37.27% max drawdown."
+        "\n  No entry filter is validated; a stop loss was measured and does not help."
+        "\n  The sample contains no severe crash, which is where this risk lives."
+    )
+
+    if out is not None:
+        from mktmtm.serving.screen import ScreenRecordExists, write_screen_record
+
+        try:
+            path = write_screen_record(result, out, overwrite=overwrite)
+        except ScreenRecordExists as exc:
+            typer.echo(f"\n  refused: {exc}")
+            raise typer.Exit(1) from exc
+        typer.echo(f"\n  record written to {path}")
+
+
 @app.command(name="run-pipeline")
 def run_pipeline_cmd(
     mode: Annotated[
