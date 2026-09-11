@@ -54,6 +54,7 @@ __all__ = [
     "CostBreakdown",
     "CostRates",
     "TradeEconomics",
+    "BROKERAGE_SCENARIOS",
     "DEFAULT_RATE_SETS",
     "MarginModel",
     "Order",
@@ -62,6 +63,7 @@ __all__ = [
     "contract_value",
     "order_costs",
     "price_strangle_trade",
+    "rate_sets",
     "resolve_rates",
     "strangle_margin",
     "strangle_orders",
@@ -117,21 +119,72 @@ class CostRates:
                 raise ValueError(f"{name} must be >= 0, got {getattr(self, name)}")
 
 
-#: Documented starting point, newest last. **Verify before relying on these.**
+#: Statutory rate regimes across the project's 2021-2026 window, newest last.
+#:
+#: **STT tripled over this window** and is the largest statutory component for a
+#: writer, so the three regimes are encoded separately rather than averaged:
+#:
+#:   0.05%    until 2023-03-31
+#:   0.0625%  from 2023-04-01  (Finance Act 2023, NSE circular FATAX56235)
+#:   0.1%     from 2024-10-01  (Finance Act 2024)
+#:
+#: NSE options transaction charges fell at the same October 2024 boundary, from
+#: 0.0495% to 0.03503% of premium (Rs 35.03 per lakh) under the SEBI uniform-fee
+#: circular of July 2024 — so that date moves two rates in opposite directions.
+#:
+#: ``brokerage_per_order`` here is a placeholder: it is **broker-specific and
+#: dominates the total** (roughly Rs 200 of Rs 316 on a typical trade), so it is
+#: overridden from ``Settings.backtest_brokerage_per_order`` and swept across
+#: :data:`BROKERAGE_SCENARIOS` rather than assumed. See :func:`rate_sets`.
 DEFAULT_RATE_SETS: tuple[CostRates, ...] = (
     CostRates(
-        effective_from=date(2021, 1, 1),
-        source="pre-2024 STT regime; VERIFY against contract notes",
+        effective_from=date(2004, 10, 1),
+        source="STT 0.05% (pre-Finance-Act-2023); NSE options txn 0.0495%",
+        stt_sell_pct=0.0005,
+        exchange_txn_pct=0.000495,
+    ),
+    CostRates(
+        effective_from=date(2023, 4, 1),
+        source="Finance Act 2023: STT 0.05% -> 0.0625% (NSE FATAX56235)",
         stt_sell_pct=0.000625,
-        exchange_txn_pct=0.00053,
+        exchange_txn_pct=0.000495,
     ),
     CostRates(
         effective_from=date(2024, 10, 1),
-        source="post-Oct-2024 STT revision; VERIFY against contract notes",
+        source="Finance Act 2024: STT -> 0.1%; SEBI uniform fees: NSE txn -> 0.03503%",
         stt_sell_pct=0.001,
         exchange_txn_pct=0.0003503,
     ),
 )
+
+#: Brokerage per executed order, in rupees, across realistic broker models.
+#: Phase 0 reports its verdict under **every** one of these, the way it reports
+#: margin at +/-25% and slippage at its breakeven: the dominant cost component
+#: must not be a single unexamined assumption.
+BROKERAGE_SCENARIOS: dict[str, float] = {
+    "zero": 0.0,        # brokers offering free F&O
+    "discount": 20.0,   # the Rs 20 flat-fee standard
+    "premium": 40.0,    # a costlier discount broker, or partial fills
+}
+
+
+def rate_sets(
+    brokerage_per_order: float | None = None,
+    base: tuple[CostRates, ...] = DEFAULT_RATE_SETS,
+) -> tuple[CostRates, ...]:
+    """``base`` with ``brokerage_per_order`` substituted into every regime.
+
+    Statutory rates are facts and are pinned; brokerage is a user-specific
+    parameter that belongs in configuration. ``None`` reads
+    ``Settings.backtest_brokerage_per_order``.
+    """
+    if brokerage_per_order is None:
+        from mktmtm.config.settings import settings
+
+        brokerage_per_order = settings.backtest_brokerage_per_order
+    return tuple(
+        replace(rates, brokerage_per_order=brokerage_per_order) for rates in base
+    )
 
 
 def resolve_rates(

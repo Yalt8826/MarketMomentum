@@ -411,10 +411,12 @@ def test_insert_backtest_result_uses_hedge_pnl_column() -> None:
 
     query, params = cursor.executed[-1]
     assert "INSERT INTO backtest_results" in query
-    assert "ON CONFLICT (symbol, year, month)" in query
+    # The PK gained `variant` so a parameter sweep cannot overwrite itself.
+    assert "ON CONFLICT (variant, symbol, year, month)" in query
     assert "hedge_pnl_points" in query
     assert params[0] == "NIFTY"
     assert params[17] is None  # hedge_pnl_points defaulted to None
+    assert params[18] == "base"  # variant defaults rather than failing
 
 
 def test_insert_backtest_result_scrubs_nan_and_keeps_hedge_pnl() -> None:

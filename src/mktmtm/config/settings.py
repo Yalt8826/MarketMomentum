@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     pg_password: str = ""
     pg_sslmode: str = "disable"
 
+    # Backtest economics. Statutory rates are pinned in backtest/economics.py;
+    # brokerage is broker-specific and dominates the total, so it lives here.
+    backtest_brokerage_per_order: float = 20.0
+
     # Pipeline tuning
     batch_size: int = 1000
     max_workers: int = 4

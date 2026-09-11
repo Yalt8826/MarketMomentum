@@ -85,7 +85,12 @@ def test_run_backtest_only_processes_resolved_scope(monkeypatch: pytest.MonkeyPa
         return _FakeConn()
 
     def fake_run_month(
-        symbol: str, year: int, month: int, _index: set[str], _cur: object
+        symbol: str,
+        year: int,
+        month: int,
+        _index: set[str],
+        _cur: object,
+        **_economics: object,
     ) -> dict[str, object]:
         processed.append((symbol, year, month))
         return {"symbol": symbol, "year": year, "month": month}

@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS backtest_results (
     put_exit_price DOUBLE PRECISION,
 
     -- Economics (Phase 0). NULL until the trade has been priced.
+    call_entry_volume BIGINT,      -- Gate 0 disclosure: a strike that never
+    put_entry_volume BIGINT,       -- traded makes the fill assumption fiction
     lot_size INTEGER,              -- in force on entry_date, never the latest
     n_orders INTEGER,              -- 4 + 2 * n_adjustments
     n_adjustments INTEGER,
@@ -65,6 +67,8 @@ CREATE INDEX IF NOT EXISTS idx_backtest_results_variant
 
 ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS variant TEXT NOT NULL DEFAULT 'base';
 ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS hedge_pnl_points DOUBLE PRECISION;
+ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS call_entry_volume BIGINT;
+ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS put_entry_volume BIGINT;
 ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS lot_size INTEGER;
 ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS n_orders INTEGER;
 ALTER TABLE backtest_results ADD COLUMN IF NOT EXISTS n_adjustments INTEGER;

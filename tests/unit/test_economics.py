@@ -154,9 +154,57 @@ def test_rates_resolve_to_the_set_in_force_not_the_latest() -> None:
     early = resolve_rates(date(2022, 6, 1), DEFAULT_RATE_SETS)
     late = resolve_rates(date(2025, 6, 1), DEFAULT_RATE_SETS)
 
-    assert early.effective_from == date(2021, 1, 1)
+    assert early.effective_from == date(2004, 10, 1)
     assert late.effective_from == date(2024, 10, 1)
     assert early.stt_sell_pct != late.stt_sell_pct
+
+
+def test_all_three_stt_regimes_are_distinguished() -> None:
+    """STT on options sales tripled across the project's window, in two steps:
+    0.05% -> 0.0625% (Finance Act 2023) -> 0.1% (Finance Act 2024). Collapsing
+    them would misprice a third of the sample."""
+    assert resolve_rates(date(2022, 6, 1), DEFAULT_RATE_SETS).stt_sell_pct == 0.0005
+    assert resolve_rates(date(2023, 6, 1), DEFAULT_RATE_SETS).stt_sell_pct == 0.000625
+    assert resolve_rates(date(2025, 6, 1), DEFAULT_RATE_SETS).stt_sell_pct == 0.001
+
+
+def test_october_2024_moves_two_rates_in_opposite_directions() -> None:
+    """STT rose and NSE transaction charges fell on the same date."""
+    before = resolve_rates(date(2024, 9, 30), DEFAULT_RATE_SETS)
+    after = resolve_rates(date(2024, 10, 1), DEFAULT_RATE_SETS)
+
+    assert after.stt_sell_pct > before.stt_sell_pct
+    assert after.exchange_txn_pct < before.exchange_txn_pct
+
+
+def test_brokerage_is_injected_into_every_regime() -> None:
+    """Brokerage is broker-specific and dominates, so it is configuration and
+    is swept, not a constant buried in a rate table."""
+    from mktmtm.backtest.economics import rate_sets
+
+    for rates in rate_sets(0.0):
+        assert rates.brokerage_per_order == 0.0
+    for rates in rate_sets(40.0):
+        assert rates.brokerage_per_order == 40.0
+    # Statutory components are untouched by the substitution.
+    assert rate_sets(40.0)[-1].stt_sell_pct == DEFAULT_RATE_SETS[-1].stt_sell_pct
+
+
+def test_brokerage_dominates_a_typical_trade() -> None:
+    """The finding that made brokerage a swept scenario rather than a guess."""
+    from mktmtm.backtest.economics import price_strangle_trade, rate_sets
+
+    kwargs = dict(
+        entry_call=22.0, entry_put=20.0, exit_call=8.0, exit_put=7.0,
+        adjustments=[(10.0, 19.0)] * 3, lot_size=500, entry_spot=1_000.0,
+        entry_date=date(2025, 6, 1),
+    )
+    free = price_strangle_trade(**kwargs, rate_sets=rate_sets(0.0))  # type: ignore[arg-type]
+    paid = price_strangle_trade(**kwargs, rate_sets=rate_sets(20.0))  # type: ignore[arg-type]
+
+    # 10 orders x Rs 20, plus the GST charged on it.
+    assert paid.costs_rupees - free.costs_rupees == pytest.approx(200 * 1.18)
+    assert paid.costs_rupees > 2 * free.costs_rupees
 
 
 def test_rates_resolve_exactly_on_the_effective_date() -> None:
@@ -167,7 +215,7 @@ def test_rates_resolve_exactly_on_the_effective_date() -> None:
 def test_a_day_before_every_known_rate_set_raises() -> None:
     """A trade priced under rates that did not exist is a fabricated number."""
     with pytest.raises(ValueError, match="no cost rates effective"):
-        resolve_rates(date(2019, 1, 1), DEFAULT_RATE_SETS)
+        resolve_rates(date(1999, 1, 1), DEFAULT_RATE_SETS)
 
 
 def test_negative_rates_are_rejected() -> None:
@@ -370,7 +418,7 @@ def test_trade_uses_the_rate_set_in_force_on_the_entry_date() -> None:
     early = price_strangle_trade(**kwargs, entry_date=date(2022, 6, 1))  # type: ignore[arg-type]
     late = price_strangle_trade(**kwargs, entry_date=date(2025, 6, 1))  # type: ignore[arg-type]
 
-    assert early.rates_effective_from == date(2021, 1, 1)
+    assert early.rates_effective_from == date(2004, 10, 1)
     assert late.rates_effective_from == date(2024, 10, 1)
 
 

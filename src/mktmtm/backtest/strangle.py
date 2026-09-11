@@ -35,8 +35,17 @@ from typing import Any
 
 import psycopg2
 from psycopg2 import InterfaceError, OperationalError, pool
+from psycopg2.extras import Json
 
+from mktmtm.backtest.economics import (
+    BROKERAGE_SCENARIOS,
+    CostRates,
+    MarginModel,
+    price_strangle_trade,
+    rate_sets,
+)
 from mktmtm.config.settings import Settings, settings
+from mktmtm.data.lots import load_lot_sizes
 from mktmtm.data.symbols import load_fno_catalog
 from mktmtm.storage.db import build_dsn
 
@@ -53,6 +62,7 @@ __all__ = [
     "insert_backtest_result",
     "is_index",
     "load_symbols_info",
+    "price_result",
     "main",
     "resolve_scope",
     "run_backtest",
@@ -397,6 +407,23 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         "put_exit_price": None,
         "exit_date": None,
         _HEDGE_PNL_KEY: None,
+        "variant": "base",
+        "cost_breakdown": None,
+        "put_entry_volume": None,
+        "call_entry_volume": None,
+        "lot_size": None,
+        "n_orders": None,
+        "n_adjustments": None,
+        "entry_spot": None,
+        "gross_pnl_rupees": None,
+        "costs_rupees": None,
+        "slippage_rupees": None,
+        "net_pnl_rupees": None,
+        "margin_rupees": None,
+        "return_on_margin": None,
+        "rates_effective_from": None,
+        "slippage_fraction": None,
+        "margin_pct": None,
     }
     for key, default_val in defaults.items():
         result_data.setdefault(key, default_val)
@@ -414,6 +441,20 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         "call_exit_price",
         "put_exit_price",
         _HEDGE_PNL_KEY,
+        "lot_size",
+        "n_orders",
+        "n_adjustments",
+        "entry_spot",
+        "gross_pnl_rupees",
+        "costs_rupees",
+        "slippage_rupees",
+        "net_pnl_rupees",
+        "margin_rupees",
+        "return_on_margin",
+        "slippage_fraction",
+        "margin_pct",
+        "call_entry_volume",
+        "put_entry_volume",
     ]
     for field in numeric_fields:
         value = result_data.get(field)
@@ -426,10 +467,11 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         entry_credit, exit_cost, pnl_points, skipped_reason,
         call_entry_strike, put_entry_strike, call_entry_delta, put_entry_delta,
         call_entry_price, put_entry_price, call_exit_price, put_exit_price,
-        hedge_pnl_points -- Stores PNL from leg adjustments
+        hedge_pnl_points, -- Stores PNL from leg adjustments
+        variant, call_entry_volume, put_entry_volume, lot_size, n_orders, n_adjustments, entry_spot, gross_pnl_rupees, costs_rupees, slippage_rupees, net_pnl_rupees, margin_rupees, return_on_margin, rates_effective_from, slippage_fraction, margin_pct, cost_breakdown
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    ON CONFLICT (symbol, year, month) DO UPDATE SET
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    ON CONFLICT (variant, symbol, year, month) DO UPDATE SET
         entry_date = EXCLUDED.entry_date,
         exit_date = EXCLUDED.exit_date,
         entry_credit = EXCLUDED.entry_credit,
@@ -444,7 +486,23 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         put_entry_price = EXCLUDED.put_entry_price,
         call_exit_price = EXCLUDED.call_exit_price,
         put_exit_price = EXCLUDED.put_exit_price,
-        hedge_pnl_points = EXCLUDED.hedge_pnl_points;
+        hedge_pnl_points = EXCLUDED.hedge_pnl_points,
+        call_entry_volume = EXCLUDED.call_entry_volume,
+        put_entry_volume = EXCLUDED.put_entry_volume,
+        lot_size = EXCLUDED.lot_size,
+        n_orders = EXCLUDED.n_orders,
+        n_adjustments = EXCLUDED.n_adjustments,
+        entry_spot = EXCLUDED.entry_spot,
+        gross_pnl_rupees = EXCLUDED.gross_pnl_rupees,
+        costs_rupees = EXCLUDED.costs_rupees,
+        slippage_rupees = EXCLUDED.slippage_rupees,
+        net_pnl_rupees = EXCLUDED.net_pnl_rupees,
+        margin_rupees = EXCLUDED.margin_rupees,
+        return_on_margin = EXCLUDED.return_on_margin,
+        rates_effective_from = EXCLUDED.rates_effective_from,
+        slippage_fraction = EXCLUDED.slippage_fraction,
+        margin_pct = EXCLUDED.margin_pct,
+        cost_breakdown = EXCLUDED.cost_breakdown;
     """
     params = (
         result_data["symbol"],
@@ -465,6 +523,25 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         result_data["call_exit_price"],
         result_data["put_exit_price"],
         result_data[_HEDGE_PNL_KEY],
+        result_data["variant"],
+        result_data["call_entry_volume"],
+        result_data["put_entry_volume"],
+        result_data["lot_size"],
+        result_data["n_orders"],
+        result_data["n_adjustments"],
+        result_data["entry_spot"],
+        result_data["gross_pnl_rupees"],
+        result_data["costs_rupees"],
+        result_data["slippage_rupees"],
+        result_data["net_pnl_rupees"],
+        result_data["margin_rupees"],
+        result_data["return_on_margin"],
+        result_data["rates_effective_from"],
+        result_data["slippage_fraction"],
+        result_data["margin_pct"],
+        Json(result_data["cost_breakdown"])
+        if result_data.get("cost_breakdown") is not None
+        else None,
     )
     try:
         cursor.execute(query, params)
@@ -480,12 +557,62 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
 
 # --- Per-month strategy -----------------------------------------------------
 
+def price_result(
+    result: dict[str, Any],
+    *,
+    lot_size: int | None,
+    entry_spot: float | None,
+    variant: str = "base",
+    slippage_fraction: float = 0.0,
+    margin_model: MarginModel | None = None,
+    rates: tuple[CostRates, ...] | None = None,
+) -> dict[str, Any]:
+    """Attach rupee economics to a completed month, in place.
+
+    A month without a resolvable lot size or entry spot is left **unpriced**
+    (economics columns stay NULL) and gains a ``pricing_skipped`` reason rather
+    than a defaulted lot. Guessing a lot size silently mis-scales that trade's
+    entire P&L, which is the class of failure this project keeps meeting.
+    """
+    result["variant"] = variant
+    if result.get("pnl_points") is None:
+        return result
+    if lot_size is None or lot_size <= 0:
+        result["pricing_skipped"] = "No Lot Size"
+        return result
+    if entry_spot is None or entry_spot <= 0:
+        result["pricing_skipped"] = "No Entry Spot"
+        return result
+
+    econ = price_strangle_trade(
+        entry_call=result["call_entry_price"],
+        entry_put=result["put_entry_price"],
+        exit_call=result["call_exit_price"],
+        exit_put=result["put_exit_price"],
+        adjustments=list(result.get("adjustment_legs") or []),
+        lot_size=lot_size,
+        entry_spot=entry_spot,
+        entry_date=result["entry_date"],
+        slippage_fraction=slippage_fraction,
+        margin_model=margin_model or MarginModel(),
+        rate_sets=rates or rate_sets(),
+    )
+    result.update(econ.as_row())
+    return result
+
+
 def run_backtest_month(
     symbol: str,
     year: int,
     month: int,
     index_symbols: set[str],
     cursor: Any,
+    *,
+    lot_schedule: Any | None = None,
+    variant: str = "base",
+    slippage_fraction: float = 0.0,
+    margin_model: MarginModel | None = None,
+    rates: tuple[CostRates, ...] | None = None,
 ) -> dict[str, Any]:
     """Run the short-strangle strategy for a single symbol/month and persist it.
 
@@ -569,6 +696,12 @@ def run_backtest_month(
     result["call_entry_price"] = call_option["settle"]
     result["put_entry_price"] = put_option["settle"]
     result["entry_credit"] = call_option["settle"] + put_option["settle"]
+    result["entry_spot"] = entry_metrics.get("underlying_price")
+    # Gate 0 disclosure: a 20-delta strike that never traded makes the
+    # settlement-price fill assumption fiction, regardless of the slippage
+    # parameter. Recorded per leg so the share can be reported, not guessed.
+    result["call_entry_volume"] = call_option.get("volume")
+    result["put_entry_volume"] = put_option.get("volume")
 
     # Track current state of the strangle legs
     current_call_strike = result["call_entry_strike"]
@@ -800,6 +933,18 @@ def run_backtest_month(
         result["pnl_points"],
     )
 
+    price_result(
+        result,
+        lot_size=(
+            lot_schedule.get(symbol, entry_date) if lot_schedule is not None else None
+        ),
+        entry_spot=result.get("entry_spot"),
+        variant=variant,
+        slippage_fraction=slippage_fraction,
+        margin_model=margin_model,
+        rates=rates,
+    )
+
     insert_backtest_result(cursor, result)
     return result
 
@@ -842,6 +987,11 @@ def run_backtest(
     symbols: list[str] | None = None,
     years: list[int] | None = None,
     months: list[int] | None = None,
+    *,
+    variant: str = "base",
+    slippage_fraction: float = 0.0,
+    margin_model: MarginModel | None = None,
+    brokerage_per_order: float | None = None,
 ) -> int:
     """Run the backtest scope and persist results to Postgres.
 
@@ -852,6 +1002,8 @@ def run_backtest(
     Returns the number of (symbol, year, month) tasks actually processed.
     """
     cfg = cfg or settings
+    lot_schedule = load_lot_sizes()
+    rates = rate_sets(brokerage_per_order)
     all_symbols, index_symbols = load_symbols_info()
     if not all_symbols:
         logger.error("No symbols loaded from catalog; aborting backtest.")
@@ -896,7 +1048,18 @@ def run_backtest(
                             continue
                         try:
                             with conn.cursor() as cur:
-                                run_backtest_month(symbol, year, month, index_symbols, cur)
+                                run_backtest_month(
+                                    symbol,
+                                    year,
+                                    month,
+                                    index_symbols,
+                                    cur,
+                                    lot_schedule=lot_schedule,
+                                    variant=variant,
+                                    slippage_fraction=slippage_fraction,
+                                    margin_model=margin_model,
+                                    rates=rates,
+                                )
                             conn.commit()  # commit after each month
                         except Exception:  # noqa: BLE001 - one bad month must not kill the run
                             logger.exception(
