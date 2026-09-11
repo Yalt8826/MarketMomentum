@@ -151,17 +151,22 @@ type  strike  settle   delta  volume       oi
 
 ### Extent
 
-**47 of 213,379 symbol-days (0.022%)** — and not randomly distributed:
+**47 of 213,379 symbol-days (0.022%)** — and the distribution is the diagnosis:
 
-| Date | Symbols affected |
+| | |
 |---|---|
-| 2025-07-31 | 9 |
-| 2025-05-29 | 5 |
-| 2025-08-28 | 2+ |
-| … | … |
+| On an **expiry date** | **39 of 47 (83%)** |
+| Scattered singletons | 8 (NMDC 2022-10-25, RELIANCE 2023-07-19, ITC 2025-01-03, …) |
 
-That clustering points at a feed or parse failure for a whole trading day, not
-anything symbol-specific.
+On expiry day the expiring series settles against the underlying, and for these
+rows that settlement value has been written into every contract's premium —
+which is exactly the shape observed: every settle equal to spot, every delta
+0.0. The eight non-expiry cases are unexplained.
+
+**Consequence for the strategy:** the exit day is the last trading day *before*
+expiry, so the strategy does not normally touch an expiry-day chain. The
+exposure comes from hedge dates and from months whose exit lands on one — which
+is why the guard is applied at all three points rather than only at exit.
 
 ### Why the obvious filters fail
 

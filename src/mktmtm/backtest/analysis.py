@@ -53,7 +53,7 @@ SELECT variant, symbol, year, month, entry_date, exit_date,
        gross_pnl_rupees, costs_rupees, slippage_rupees, net_pnl_rupees,
        margin_rupees, return_on_margin, cost_breakdown,
        rates_effective_from, slippage_fraction, margin_pct,
-       call_entry_volume, put_entry_volume
+       call_entry_volume, put_entry_volume, stopped_out
 FROM backtest_results
 WHERE variant = %(variant)s
 ORDER BY symbol, year, month

@@ -275,6 +275,58 @@ else:
     else:
         ok("median fii_pct evolves smoothly year to year")
 
+print("\n" + "=" * 70)
+print("8) OPTION CHAIN INTEGRITY (degenerate price surfaces)")
+print("=" * 70)
+
+# A whole expiry priced at a single value is not a price surface. Found in the
+# Phase 0 backtest: on NMDC 2022-10-25 all 206 chain elements carried an
+# identical settle of 130.75 against a spot of 130.71 — the underlying's price
+# written into every option's premium, every delta 0.0 because the IV solver
+# cannot converge on prices that make no sense.
+#
+# Neither obvious per-contract filter catches it. Volume does not: affected
+# strikes include one with 2,492 lots traded. The no-arbitrage bound (a call
+# cannot be worth more than the stock) does not either, because the corrupt
+# value sits at 99.97% of spot. The degeneracy itself is the signature.
+#
+# 39 of the 47 historical cases (83%) fall on an EXPIRY DATE: the expiring
+# series settles against the underlying, and that value has been written into
+# every contract's premium. Watch this count around expiries. Reported rather
+# than failed: the rows are a real record of what was published, and every
+# consumer should skip them rather than have them silently deleted.
+degenerate = q(
+    """
+    SELECT om.date::text, om.symbol
+    FROM option_metrics om
+    WHERE om.date >= (SELECT max(date) - INTERVAL '400 days' FROM option_metrics)
+    GROUP BY om.date, om.symbol, om.option_chain
+    HAVING (
+        SELECT count(DISTINCT e->>'settle')
+        FROM jsonb_array_elements(om.option_chain) e
+    ) = 1
+    ORDER BY om.date DESC
+    """
+)
+if degenerate:
+    by_date: dict[str, list[str]] = {}
+    for d, sym in degenerate:
+        by_date.setdefault(d, []).append(sym)
+    print(
+        f"  ⚠ {len(degenerate)} degenerate symbol-day(s) in the last 400 days "
+        f"across {len(by_date)} date(s)"
+    )
+    for d in sorted(by_date, reverse=True)[:6]:
+        syms = by_date[d]
+        print(f"      {d}: {len(syms)} symbol(s) — {', '.join(sorted(syms)[:6])}")
+    print(
+        "    These carry one settle across an entire chain. Consumers must skip "
+        "them (see backtest.strangle.chain_is_degenerate); they are NOT a gate "
+        "failure, because the rows faithfully record what was published."
+    )
+else:
+    ok("no degenerate option chains in the last 400 days")
+
 conn.close()
 print("\n" + ("=" * 70))
 print("RESULT:", "FAIL — fix the ✗ items before training" if fail else "PASS — database is ready for ML training")

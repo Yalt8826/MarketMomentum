@@ -795,3 +795,113 @@ def test_degeneracy_is_detected_within_the_traded_expiry() -> None:
     assert not chain_is_degenerate(chain, far)
     # The whole-chain view is fooled — which is the point.
     assert not chain_is_degenerate(chain)
+
+
+# ───────────────────────────── stop loss ────────────────────────────────────
+
+
+def _runaway_month_metrics() -> dict[tuple[str, date], dict]:
+    """A month where the call side runs away hard after the first week.
+
+    Entry Mon 01-Sep-2025. From 08-Sep the call premium multiplies tenfold while
+    the put decays — a position deep under water, which is what a stop is for.
+    """
+    days = [date(2025, 9, d) for d in [1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 15, 16]]
+    expiry = date(2025, 9, 25)
+    expiry_str = expiry.strftime("%d-%b-%Y")
+
+    def chain_at(call_mult: float, put_mult: float) -> list[dict]:
+        rows: list[dict] = []
+        for i, strike in enumerate([24000.0, 24500.0, 25000.0]):
+            rows.append(_opt("CE", expiry_str, strike, 0.15 + 0.025 * i,
+                             (40.0 + i * 5) * call_mult))
+            rows.append(_opt("PE", expiry_str, strike, -(0.20 - 0.025 * i),
+                             (50.0 - i * 5) * put_mult))
+        return rows
+
+    return {
+        ("NIFTY", day): {
+            "underlying_price": 24600.0,
+            "interest_rate": 6.5,
+            "expiry_30d": expiry,
+            "upcoming_earning_date": None,
+            "option_chain": chain_at(10.0, 0.2) if day >= date(2025, 9, 8) else chain_at(1.0, 1.0),
+        }
+        for day in days
+    }
+
+
+def test_a_runaway_loss_triggers_the_stop() -> None:
+    cursor = FakeCursor(_runaway_month_metrics())
+
+    result = run_backtest_month(
+        "NIFTY", 2025, 9, {"NIFTY"}, cursor, stop_loss_multiple=2.0
+    )
+
+    assert result["stopped_out"] is True
+    assert result["exit_date"] < date(2025, 9, 16)  # before the scheduled exit
+    assert result["pnl_points"] is not None
+
+
+def test_without_a_stop_the_same_month_runs_to_expiry() -> None:
+    """The control: the stop is what changed the outcome, not the fixture."""
+    cursor = FakeCursor(_runaway_month_metrics())
+
+    result = run_backtest_month("NIFTY", 2025, 9, {"NIFTY"}, cursor)
+
+    assert result.get("stopped_out") is not True
+
+
+def test_the_stop_caps_the_loss_near_its_threshold() -> None:
+    """A 2x stop should not lose dramatically more than 2x the entry credit."""
+    cursor = FakeCursor(_runaway_month_metrics())
+
+    result = run_backtest_month(
+        "NIFTY", 2025, 9, {"NIFTY"}, cursor, stop_loss_multiple=2.0
+    )
+
+    # Some overshoot is expected — the stop fires on a weekly mark, not
+    # continuously, so a gap between checks is not caught.
+    assert result["pnl_points"] > -6.0 * result["entry_credit"]
+
+
+def test_a_quiet_month_never_trips_the_stop() -> None:
+    cursor = FakeCursor(_month_metrics())
+
+    result = run_backtest_month(
+        "NIFTY", 2025, 9, {"NIFTY", "BANKNIFTY"}, cursor, stop_loss_multiple=2.0
+    )
+
+    assert result.get("stopped_out") is not True
+    assert result["exit_date"] == date(2025, 9, 16)
+
+
+def test_the_stop_is_checked_before_the_adjustment() -> None:
+    """The adjustment re-sells into a losing position — doubling down on the
+    move that is hurting. A stop firing only afterwards has already taken the
+    risk it exists to avoid, so a stopped month must record no adjustment on
+    the date it stopped."""
+    cursor = FakeCursor(_runaway_month_metrics())
+
+    result = run_backtest_month(
+        "NIFTY", 2025, 9, {"NIFTY"}, cursor, stop_loss_multiple=2.0
+    )
+
+    assert result["stopped_out"] is True
+    # The first hedge date is 05-Sep (still calm); the runaway starts 08-Sep, so
+    # at most that one adjustment can have happened before the stop.
+    assert len(result["adjustment_legs"]) <= 1
+
+
+def test_a_skipped_month_carries_its_variant() -> None:
+    """Regression: variant was set only during pricing, so skipped months — which
+    never reach pricing — were written under the default. Every variant's skip
+    taxonomy silently merged into the base run's."""
+    cursor = FakeCursor({})
+
+    result = run_backtest_month("NIFTY", 2025, 9, {"NIFTY"}, cursor, variant="stop2")
+
+    assert result["skipped_reason"] == "No Trading Days"
+    assert result["variant"] == "stop2"
+    _, params = cursor.executed[-1]
+    assert params[18] == "stop2"

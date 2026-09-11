@@ -354,10 +354,12 @@ def chain_is_degenerate(
     normally. A whole-chain test sees 193 distinct settles and passes it.
     Checking the expiry actually being traded catches both shapes.
 
-    It is rare and it is not random: **47 of 213,379 symbol-days (0.022%)** are
-    degenerate across the entire chain, clustered on particular dates (nine
-    symbols share 2025-07-31, five share 2025-05-29), which points at a feed or
-    parse failure for a whole day rather than anything symbol-specific.
+    It is rare and it is not random: **47 of 213,379 symbol-days (0.022%)**, and
+    **39 of those 47 (83%) fall on an expiry date**. That pattern is the
+    diagnosis — on expiry day the expiring series settles against the
+    underlying, and for these rows that settlement value has been written into
+    every contract's premium. The remaining 8 are scattered singletons
+    (NMDC 2022-10-25, RELIANCE 2023-07-19, ITC 2025-01-03, …).
 
     Neither obvious per-contract filter catches it. Volume does not: affected
     strikes include ones with 2,492 lots traded. The no-arbitrage bound does not
@@ -554,6 +556,7 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         "exit_date": None,
         _HEDGE_PNL_KEY: None,
         "variant": "base",
+        "stopped_out": False,
         "cost_breakdown": None,
         "put_entry_volume": None,
         "call_entry_volume": None,
@@ -614,9 +617,9 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         call_entry_strike, put_entry_strike, call_entry_delta, put_entry_delta,
         call_entry_price, put_entry_price, call_exit_price, put_exit_price,
         hedge_pnl_points, -- Stores PNL from leg adjustments
-        variant, call_entry_volume, put_entry_volume, lot_size, n_orders, n_adjustments, entry_spot, gross_pnl_rupees, costs_rupees, slippage_rupees, net_pnl_rupees, margin_rupees, return_on_margin, rates_effective_from, slippage_fraction, margin_pct, cost_breakdown
+        variant, stopped_out, call_entry_volume, put_entry_volume, lot_size, n_orders, n_adjustments, entry_spot, gross_pnl_rupees, costs_rupees, slippage_rupees, net_pnl_rupees, margin_rupees, return_on_margin, rates_effective_from, slippage_fraction, margin_pct, cost_breakdown
     )
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
     ON CONFLICT (variant, symbol, year, month) DO UPDATE SET
         entry_date = EXCLUDED.entry_date,
         exit_date = EXCLUDED.exit_date,
@@ -633,6 +636,7 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         call_exit_price = EXCLUDED.call_exit_price,
         put_exit_price = EXCLUDED.put_exit_price,
         hedge_pnl_points = EXCLUDED.hedge_pnl_points,
+        stopped_out = EXCLUDED.stopped_out,
         call_entry_volume = EXCLUDED.call_entry_volume,
         put_entry_volume = EXCLUDED.put_entry_volume,
         lot_size = EXCLUDED.lot_size,
@@ -670,6 +674,7 @@ def insert_backtest_result(cursor: Any, result_data: dict[str, Any]) -> None:
         result_data["put_exit_price"],
         result_data[_HEDGE_PNL_KEY],
         result_data["variant"],
+        result_data["stopped_out"],
         result_data["call_entry_volume"],
         result_data["put_entry_volume"],
         result_data["lot_size"],
@@ -759,6 +764,7 @@ def run_backtest_month(
     slippage_fraction: float = 0.0,
     margin_model: MarginModel | None = None,
     rates: tuple[CostRates, ...] | None = None,
+    stop_loss_multiple: float | None = None,
 ) -> dict[str, Any]:
     """Run the short-strangle strategy for a single symbol/month and persist it.
 
@@ -766,7 +772,12 @@ def run_backtest_month(
     not be traded), mirroring the legacy flow.
     """
     logger.info("--- Running backtest for %s %s-%02d ---", symbol, year, month)
-    result: dict[str, Any] = {"symbol": symbol, "year": year, "month": month}
+    # Set here, not in price_result: a skipped month never reaches pricing, and
+    # would otherwise be written under the default variant — silently merging
+    # every variant's skip taxonomy into the base run's.
+    result: dict[str, Any] = {
+        "symbol": symbol, "year": year, "month": month, "variant": variant,
+    }
 
     month_start = date(year, month, 1)
     month_end = date(year, month, calendar.monthrange(year, month)[1])
@@ -873,6 +884,13 @@ def run_backtest_month(
     # (bought_back_premium, resold_premium) per adjustment. Each pair is TWO
     # orders, which is what the cost model charges for.
     adjustment_legs: list[tuple[float, float]] = []
+    # A stop is expressed as a multiple of the credit collected at entry — the
+    # natural unit, since that is what the trade was paid to take the risk.
+    initial_credit = result["entry_credit"]
+    stop_threshold = (
+        -stop_loss_multiple * initial_credit if stop_loss_multiple is not None else None
+    )
+    stopped_out = False
 
     logger.info(
         "Entry: Sell CE %s @ %.2f (Δ %.2f), Sell PE %s @ %.2f (Δ %.2f). Credit: %.2f",
@@ -947,6 +965,35 @@ def run_backtest_month(
 
         current_call_price = call_data_hedge["settle"]
         current_put_price = put_data_hedge["settle"]
+
+        # --- Stop loss, checked BEFORE adjusting ---------------------------
+        #
+        # Mark to market: everything banked so far, plus what each open leg was
+        # sold for minus what it would cost to buy back now.
+        #
+        # Checked before the adjustment because the adjustment re-sells into a
+        # losing position — doubling down on exactly the move that is hurting.
+        # A stop that fires only afterwards has already taken the risk it exists
+        # to avoid.
+        if stop_threshold is not None:
+            unrealised = (
+                total_adjustment_pnl
+                + (current_call_sold_price - current_call_price)
+                + (current_put_sold_price - current_put_price)
+            )
+            if unrealised <= stop_threshold:
+                logger.info(
+                    "Stop hit for %s on %s: unrealised %.2f <= %.2f (%.1fx the "
+                    "%.2f entry credit). Closing both legs.",
+                    symbol, hedge_date, unrealised, stop_threshold,
+                    stop_loss_multiple, initial_credit,
+                )
+                result["call_exit_price"] = current_call_price
+                result["put_exit_price"] = current_put_price
+                result["exit_date"] = hedge_date
+                result["stopped_out"] = True
+                stopped_out = True
+                break
 
         # Close the 'profitable' leg (the cheaper one to buy back)
         close_call = current_call_price < current_put_price
@@ -1027,6 +1074,29 @@ def run_backtest_month(
                 return result
 
     # --- End Adjustment Loop ---
+
+    if stopped_out:
+        result[_HEDGE_PNL_KEY] = total_adjustment_pnl
+        result["pnl_points"] = (
+            total_adjustment_pnl
+            + (current_call_sold_price - result["call_exit_price"])
+            + (current_put_sold_price - result["put_exit_price"])
+        )
+        result["exit_cost"] = result["call_exit_price"] + result["put_exit_price"]
+        result["adjustment_legs"] = adjustment_legs
+        price_result(
+            result,
+            lot_size=(
+                lot_schedule.get(symbol, entry_date) if lot_schedule is not None else None
+            ),
+            entry_spot=result.get("entry_spot"),
+            variant=variant,
+            slippage_fraction=slippage_fraction,
+            margin_model=margin_model,
+            rates=rates,
+        )
+        insert_backtest_result(cursor, result)
+        return result
 
     # Exit metrics
     exit_metrics = get_metrics_for_day(cursor, symbol, exit_date)
@@ -1181,6 +1251,7 @@ def run_backtest(
     slippage_fraction: float = 0.0,
     margin_model: MarginModel | None = None,
     brokerage_per_order: float | None = None,
+    stop_loss_multiple: float | None = None,
 ) -> int:
     """Run the backtest scope and persist results to Postgres.
 
@@ -1248,6 +1319,7 @@ def run_backtest(
                                     slippage_fraction=slippage_fraction,
                                     margin_model=margin_model,
                                     rates=rates,
+                                    stop_loss_multiple=stop_loss_multiple,
                                 )
                             conn.commit()  # commit after each month
                         except Exception:  # noqa: BLE001 - one bad month must not kill the run
