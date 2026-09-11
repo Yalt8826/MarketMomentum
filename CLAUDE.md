@@ -50,6 +50,7 @@ uv run mktmtm flow-attribution      # Stage 3: LLP attribution → flow_attribut
 uv run mktmtm flow-momentum         # Stage 4: does positioning continue? (self-supervised)
 uv run mktmtm accumulation          # Stage 5: detect accumulation vs shareholding label
 uv run mktmtm nowcast               # rank symbols for the quarter SEBI has not disclosed yet
+uv run mktmtm screen                # trading tool: today's strangles, priced and risk-capped
 ```
 
 Smoke runs: `make-dataset --limit-symbols RELIANCE,TCS --limit-dates 30`, `process --limit-days 5`,
@@ -204,7 +205,9 @@ work from the research: the detector cannot be traded (score -> forward return +
 Gate 1 — beating IV rank alone — is expected to fail and that prior is recorded.
 **Gate 0 PASSED**: +4.56% mean return on margin, 6/6 years positive, -37.27% max
 drawdown. **Gate 1 FAILED as predicted**: no feature beats chance, and neither does IV
-rank — selectivity does not help this strategy. Four silent defects found and fixed on
+rank. **A stop loss was measured at 1.5x/2x/3x and makes every outcome worse.**
+`mktmtm screen` ships the daily tool — ordered by tradeability, not conviction,
+with typed refusals and a frozen dated record. Four silent defects found and fixed on
 the way — see `docs/trading/results/`),
 **`docs/understanding/v1/`** (the ground-up explanation of the whole project for a reader
 with no market background: markets → F&O → open interest → the Greeks → the project idea →

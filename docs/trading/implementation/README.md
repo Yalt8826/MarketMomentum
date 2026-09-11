@@ -34,6 +34,7 @@ days, with retail on the other side.
 | 07 | [Build order](07-build-order.md) | Task list: files, tests, gates |
 | 08 | [Phase 0 as built](08-phase-0-as-built.md) | ✅ What was actually written, and where it deviates from the plan |
 | 09 | [Phase 1 as built](09-phase-1-as-built.md) | ✅ The evaluation harness, and the strictly-prior guarantee it rests on |
+| 10 | [Phases 2 and 3 as built](10-phase-2-3-as-built.md) | ✅ The screen, its refusals, and the frozen record |
 
 ## Results so far
 
@@ -57,7 +58,7 @@ Each can stop the work. All criteria are fixed before any number exists.
 |---|---|---|
 | **0** | Does strangle-selling make money **net of costs**? | **Likely passes** |
 | **1** | Do our features beat **IV rank alone**? | ❌ **Failed, as predicted** |
-| 2 | — build only — | |
+| 2 | — build only — | ✅ built |
 | **3** | Does it hold forward, ≥6 months, losses included? | Unknown by design |
 
 ## Why Gate 1 is the one that matters
