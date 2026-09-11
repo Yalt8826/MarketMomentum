@@ -12,7 +12,7 @@ same resolution as positive ones, following the research branch's practice.
 | Gate | Question | Verdict | |
 |---|---|---|---|
 | **0** | Does strangle-selling make money net of costs? | ✅ **PASS** | [gate-0-base-strategy.md](gate-0-base-strategy.md) |
-| **1** | Do this project's features beat IV rank alone? | not run | [spec](../implementation/04-phase-1-evaluation.md) |
+| **1** | Do this project's features beat IV rank alone? | ❌ **FAIL** | [gate-1-feature-filters.md](gate-1-feature-filters.md) |
 | **2** | — build only — | not run | |
 | **3** | Does it hold forward, ≥ 6 months? | not run | |
 
@@ -39,6 +39,7 @@ decaying monotonically — 8.30% in 2021 to 1.09% in 2025.
 | | |
 |---|---|
 | [Gate 0 — base strategy](gate-0-base-strategy.md) | The verdict, the four mandatory disclosures, and five reasons to discount it |
+| [Gate 1 — feature filters](gate-1-feature-filters.md) | The research features do not improve the strategy. Neither does IV rank. |
 | [Bugs and fixes](bugs-and-fixes.md) | Four silent defects found in Phase 0, how they were caught, and what they cost |
 
 ## The finding most worth carrying

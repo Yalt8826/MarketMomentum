@@ -40,7 +40,7 @@ days, with retail on the other side.
 |---|---|---|
 | **0** — does the base strategy make money? | ✅ **PASS** | [gate-0-base-strategy.md](../results/gate-0-base-strategy.md) |
 | — four silent defects found on the way | fixed | [bugs-and-fixes.md](../results/bugs-and-fixes.md) |
-| **1** — do our features beat IV rank? | not run | |
+| **1** — do our features beat IV rank? | ❌ **FAIL** | [gate-1-feature-filters.md](../results/gate-1-feature-filters.md) |
 
 Gate 0: +4.56% mean return on margin per trade, positive in 6 of 6 years,
 −37.27% max drawdown, breakeven slippage 3.16% per leg. Three silent defects
@@ -55,7 +55,7 @@ Each can stop the work. All criteria are fixed before any number exists.
 | Gate | Question | Prior |
 |---|---|---|
 | **0** | Does strangle-selling make money **net of costs**? | **Likely passes** |
-| **1** | Do our features beat **IV rank alone**? | ⭐ **Likely fails** |
+| **1** | Do our features beat **IV rank alone**? | ❌ **Failed, as predicted** |
 | 2 | — build only — | |
 | **3** | Does it hold forward, ≥6 months, losses included? | Unknown by design |
 
