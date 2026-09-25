@@ -214,12 +214,16 @@ with typed refusals and a frozen dated record; `mktmtm score-screens` scores tho
 records forward. **Gate 3 is at 0 of 6 eligible months**: a record counts only if it
 entered on the month's FIRST TRADING DAY and was committed to git BEFORE its outcome
 existed — eight backtested screens returning +94.55% cumulative were correctly
-excluded on that basis. Four silent defects found and fixed on
+excluded on that basis. Six silent defects found and fixed on
 the way — see `docs/trading/results/`),
 **`docs/understanding/v1/`** (the ground-up explanation of the whole project for a reader
-with no market background: markets → F&O → open interest → the Greeks → the project idea →
-data → pipeline → features → the six stages → results → the ten silent defects. Written from
-the documents below and consistent with them; update it when a headline number changes),
+with no market background, in three parts: **I (01-06)** markets → F&O → open interest → the
+Greeks; **II (07-16)** the research — project idea → data → pipeline → features → the six
+stages → results → the ten silent defects; **III (17-22)** the trading tool — why the
+detector cannot be traded → selling volatility → trade economics → the four gates → Gate 0/1
+and the stop loss → the daily screen → forward validation and its six further defects;
+**23-24** glossary and a file-to-document map. Written from the documents below and consistent
+with them; update it when a headline number changes),
 `docs/runbook.md` (running the pipeline end to end: order, measured timings, the three
 things that bite, and how to score the frozen nowcast),
 `docs/implementation/nowcast.md` (the detector run forward against an undisclosed quarter:

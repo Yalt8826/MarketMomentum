@@ -29,12 +29,25 @@ which publishes far more detail, far sooner, for free. The answer, after five
 modelling stages, is: *mostly no, but in one specific and carefully-tested case,
 yes.*
 
+**And then it asks a second question.** Having built a detector that works, the
+project measured whether an ordinary trader could profit from it — and found
+that they could not, for reasons that are not the detector's fault. So the work
+pivoted a second time, to a strategy that needs no direction forecast at all:
+**selling volatility**. That is Part III, and it has its own strategy, its own
+economics, and its own four-gate testing discipline.
+
 ---
 
 ## Read these in order
 
-The first six documents are pure background — no code, no project. If you
-already know what a call option and open interest are, start at #07.
+The folder is in three parts plus two reference documents.
+
+- **Part I (01–06)** is pure background — no code, no project. If you already
+  know what a call option and open interest are, start at #07.
+- **Part II (07–16)** is the research project: detecting institutional flow.
+- **Part III (17–22)** is the trading tool: selling volatility. It follows from
+  Part II but can be read on its own if you know what an option is.
+- **23 and 24** are reference — a glossary and a file-by-file map.
 
 | # | Document | What it covers |
 |---|---|---|
@@ -44,6 +57,11 @@ already know what a call option and open interest are, start at #07.
 | 04 | [Open interest — the footprint](04-open-interest-the-footprint.md) | The single most important idea in the project. Volume vs open interest, the option chain, the futures basis. |
 | 05 | [Pricing, volatility and the Greeks](05-pricing-iv-and-greeks.md) | Black-Scholes, implied volatility, delta and gamma, and why a dealer's hedging is *forced*. |
 | 06 | [How derivatives feed back into the stock market](06-how-derivatives-move-markets.md) | The mechanism the whole project bets on: why option positions cause real buying and selling in the actual stock. |
+
+### Part II — the research project
+
+| # | Document | What it covers |
+|---|---|---|
 | 07 | [The project idea](07-the-project-idea.md) | The research question, why it is *detection* and not *prediction*, and the missing-label problem that shapes everything. |
 | 08 | [The data](08-the-data.md) | Every source we download, field by field, what it means in the market, and what it cannot tell us. |
 | 09 | [The pipeline](09-the-pipeline.md) | How 60 million rows of raw exchange files become a table a model can read. |
@@ -52,10 +70,26 @@ already know what a call option and open interest are, start at #07.
 | 12 | [The models, stage by stage](12-the-models.md) | All six modelling stages: what each asked, how it was built, and what it answered. |
 | 13 | [The journey](13-the-journey.md) | The chronological story — including the two approaches that were abandoned and why. Covers both `main` and this branch. |
 | 14 | [Results, in plain terms](14-results.md) | What we can and cannot claim, with the numbers translated out of statistics into English. |
-| 15 | [Bugs we found, and what they taught](15-bugs-and-lessons.md) | Six silent data defects. This is arguably the most useful document in the folder. |
+| 15 | [Bugs we found, and what they taught](15-bugs-and-lessons.md) | Sixteen defects, nearly all silent — eleven from the research, six from the trading branch. Arguably the most useful document in the folder. |
 | 16 | [Running it yourself](16-running-it.md) | The commands, in order, with timings and what to expect. |
-| 17 | [Glossary](17-glossary.md) | Every term, alphabetically. |
-| 18 | [The rest of the repository](18-the-rest-of-the-repo.md) | Everything off the research path — the backtester, the UI, the API stub, the legacy pipeline, testing — plus a file-to-document map. |
+
+### Part III — the trading tool
+
+| # | Document | What it covers |
+|---|---|---|
+| 17 | [Selling volatility instead of predicting direction](17-selling-volatility.md) | Why the detector cannot be traded, what "selling volatility" means, and who pays the premium. |
+| 18 | [What a trade actually costs](18-what-a-trade-costs.md) | Lot size, the six statutory charges, margin, slippage — with a worked example from points to a return. |
+| 19 | [The four gates](19-the-four-gates.md) | How to test a strategy without fooling yourself. Pre-registration, walk-forward, the block bootstrap. |
+| 20 | [Does it make money?](20-does-it-make-money.md) | Gate 0 (pass), Gate 1 (fail), and the stop loss that made everything worse. |
+| 21 | [The daily screen](21-the-daily-screen.md) | The actual tool: refusals, risk caps, sizing, and a real run read line by line. |
+| 22 | [Forward validation](22-forward-validation.md) | Gate 3, why a git commit is the evidence, and the +94.55% the tool refuses to count. |
+
+### Reference
+
+| # | Document | What it covers |
+|---|---|---|
+| 23 | [Glossary](23-glossary.md) | Every term, alphabetically. |
+| 24 | [The rest of the repository](24-the-rest-of-the-repo.md) | Everything off both narrative paths — the UI, the API stub, the legacy pipeline, testing — plus a file-to-document map. |
 
 ---
 
@@ -106,6 +140,18 @@ named. The project's entire job is to learn the mapping from one to the other.
 
 Document 14 makes each of those precise.
 
+And for the trading tool:
+
+| Question asked | Answer |
+|---|---|
+| Can the detector be traded? | **No.** Score → next quarter's return is +0.0200, 11 of 19 quarters. |
+| Does selling strangles make money net of costs? | **Yes** — +4.56% per trade, positive in 6 of 6 years. |
+| Do our research features improve it? | **No.** Nothing beat a random filter — including implied-volatility rank. |
+| Does a stop loss reduce the risk? | **No.** It made return, worst trade, drawdown and Sharpe all worse. |
+| Has it been validated forward? | **Not yet.** 0 of 6 months; answerable around March 2027. |
+
+Document 20 makes each of those precise.
+
 ---
 
 ## A note on how to read the numbers
@@ -119,7 +165,10 @@ whole project, and if you take nothing else from this folder, take these:
    stock went up" or "it is expiry week."
 2. **Report the control, never the raw number.** A feature that correlates
    +0.36 with the answer and +0.36 with the dumb explanation has found nothing.
-3. **Write the prediction down before the outcome exists.** This project has one
-   such record, [`nowcast-2026-08-28.md`](../../results/nowcast-2026-08-28.md),
-   committed to git before the data to score it existed. It can fail. That is
-   the point.
+3. **Write the prediction down before the outcome exists.** This project has
+   three such records — two nowcasts
+   ([`nowcast-2026-08-28.md`](../../results/nowcast-2026-08-28.md)) and one
+   trading screen — each committed to git before the data to score it existed.
+   They can fail. That is the point, and
+   [document 22](22-forward-validation.md) shows what happens to a +94.55%
+   return that does not meet the standard.

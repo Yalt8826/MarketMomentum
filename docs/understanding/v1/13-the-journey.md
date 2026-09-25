@@ -2,9 +2,10 @@
 
 [← The models](12-the-models.md) · [Index](README.md) · Next: [Results →](14-results.md)
 
-This is the chronological story, covering both branches: what `main` built, what
-`feat/gex-dealer-positioning` added, and — most instructively — the two whole
-approaches that were built, evaluated and abandoned.
+This is the chronological story, covering all three branches: what `main` built,
+what `feat/gex-dealer-positioning` added, what `feat/vol-selling-strategy` did
+with the result — and, most instructively, the several whole approaches that were
+built, evaluated and abandoned along the way.
 
 Nothing here was planned in advance. Each phase is a response to what the
 previous one measured.
@@ -34,11 +35,25 @@ flowchart TB
         B8["Nowcast + engineering<br/><i>frozen prediction,<br/>pipeline runner, incremental ETL</i>"]
     end
 
+    subgraph TRADE["Branch: feat/vol-selling-strategy — 14 commits"]
+        T0["<b>The second pivot</b><br/>the detector does not<br/>reach a trading outcome"]
+        T1["Phase 0 — economics<br/><i>lot size, costs, margin,<br/>slippage</i>"]
+        T2["<b>Gate 0</b> — the base strategy<br/>✅ PASS, +4.56%"]
+        T3["<b>Gate 1</b> — do our features help?<br/>❌ FAIL, as predicted"]
+        T4["Stop loss<br/>❌ measured, harmful"]
+        T5["The screen + scoring harness<br/><i>refusals, caps, frozen record</i>"]
+        T6["<b>Gate 3</b> — forward<br/>⏳ 0 of 6 months"]
+    end
+
     M0 --> M1 --> M2 --> M3 --> M4 --> B1
     B1 --> B2 --> B3 --> B4 --> B5 --> B6 --> B7 --> B8
+    B8 --> T0 --> T1 --> T2 --> T3 --> T4 --> T5 --> T6
 
     style B7 fill:#1a3a1a,stroke:#4caf50,color:#fff
     style B5 fill:#3d2f00,stroke:#ffc107,color:#fff
+    style T0 fill:#3d2f00,stroke:#ffc107,color:#fff
+    style T2 fill:#1a3a1a,stroke:#4caf50,color:#fff
+    style T3 fill:#4a1e1e,stroke:#ff6b6b,color:#fff
 ```
 
 ---
@@ -80,8 +95,9 @@ weekly delta-hedge adjustments: sell the ~20-delta call and put of the 30-day
 expiry on the first trading day of each month, rebalance weekly, close before
 expiry.
 
-The backtester is the one part of the project aimed at *trading* rather than
-*detection*, and it has been quiet since the project's focus shifted.
+The backtester was the one part of the project aimed at *trading* rather than
+*detection*, and it lay quiet for months after the focus shifted — until Part
+III turned it into the centre of a second project. See §III below.
 
 ### Phases 6–7 — CLI and UI
 
@@ -164,7 +180,7 @@ on:
 
 - **Participant-wise OI ingestion** — the only named daily data, and the
   instrument that settled both the dealer sign and the OI-units question.
-- **The lot-size schedule** — 853 change-points, because lot sizes are revised.
+- **The lot-size schedule** — 852 change-points, because lot sizes are revised.
 - **The units fix** — `OPEN_INT` is in shares, not contracts. The reference file
   asserted the reverse until it was measured; the raw sum was off by ~2,158×.
 - **Flow features** — outlier strikes and the futures basis, built to read the
@@ -238,6 +254,100 @@ unattended:
 
 ---
 
+---
+
+## Part III — the branch that stopped asking which way
+
+`feat/vol-selling-strategy`, 14 commits, built 2026-09-11 → 2026-09-12. A
+separate line of work: different question, different cadence, different
+definition of success. [Documents 17–22](17-selling-volatility.md) cover it in
+full; this is how it came about.
+
+### The second pivot
+
+The research had a positive result. The obvious next question was whether a
+normal trader could use it — and the answer, measured, was no:
+
+| Link | IC | Quarters + |
+|---|---|---|
+| our score → MF accumulation | **+0.1351** | 18/19 |
+| MF accumulation → next quarter's return | +0.0502 | 12/19 |
+| **our score → next quarter's return** | **+0.0200** | 11/19 |
+
+**The chain breaks at the second link, and not through any fault of the
+detector.** Even perfect knowledge of mutual-fund accumulation barely predicts
+returns, because domestic funds are contrarian (−0.064) and quarterly momentum
+is itself negative (−0.047). No improvement in detection could have reached a
+trading outcome.
+
+So the branch stopped asking *which way* and started asking *how much* — selling
+volatility rather than forecasting direction, because magnitude is where every
+forward relationship this project ever measured actually lives (`ce_iv_30` at
++0.2114 against Stage 1's best margin of +0.002).
+
+**This is the project's second reframe, and it has the same shape as the
+first.** The reframe on the research branch changed *forecasting* to
+*detection*; this one changes *direction* to *magnitude*. Both were forced by
+measurement rather than chosen, and both came after the previous framing had
+been pushed as far as it would go.
+
+### What was built, and what it found
+
+| | |
+|---|---|
+| `backtest/economics.py` | Costs, margin, slippage, whole-trade pricing |
+| `backtest/analysis.py` | The Gate 0 report |
+| `backtest/filters.py` | Feature join, baselines, significance |
+| `serving/screen.py` | The daily tool, and its frozen record |
+| `serving/scoring.py` | Forward validation |
+| `backtest/strangle.py` | +518 lines: economics, stop loss, three defect fixes |
+
+Four gates, every criterion fixed before the number existed:
+
+| Gate | Question | Verdict |
+|---|---|---|
+| **0** | Does strangle-selling make money net of costs? | ✅ **PASS** — +4.56%, 6/6 years, −37.27% drawdown |
+| **1** | Do our research features beat IV rank alone? | ❌ **FAIL** — nothing beat chance, including IV rank |
+| **2** | Build the tool | ✅ Built |
+| **3** | Does it hold forward, ≥6 months? | ⏳ **0 of 6**, answerable ~March 2027 |
+
+And one intervention measured and rejected: a **stop loss**, tested at
+1.5×/2×/3× the entry credit, made *every* column worse — return, worst trade,
+drawdown and Sharpe together. It catches the recoverable losses and misses the
+unrecoverable one.
+
+### Six more silent defects
+
+All six produced plausible output and raised nothing; two predated the branch.
+They were found because Gate 0's first run reported a **worst trade of −1,677%**
+— a loss of sixteen times the margin posted, which the strategy cannot produce.
+Every headline statistic on that same run looked fine.
+
+Chasing that one impossible number found three separate data defects. Fixing
+them moved the mean by **less than half a percentage point** while the worst
+trade fell to −245.8%.
+
+> The mean was never the contaminated statistic. **The tail was** — and in a
+> premium-selling strategy the tail is what decides whether the book is usable.
+
+[Document 15 §12–17](15-bugs-and-lessons.md) covers all six.
+
+### The third abandonment, and a refusal
+
+Gate 1's failure abandoned the idea that the research would feed the tool.
+What replaced it is a screen that orders by *tradeability* rather than
+conviction, and displays the research features only with the label *"tested in
+Gate 1; did not beat chance."*
+
+Then, while building the forward-validation harness, eight screens generated for
+February–September 2026 returned a cumulative **+94.55%** — and the harness
+excluded every one of them, because they were written for months whose outcomes
+already existed. A near-doubling of capital that the tool refuses to count is
+the best demonstration available that the check works.
+[Document 22](22-forward-validation.md).
+
+---
+
 ## What each abandonment cost, and taught
 
 | Abandoned | Effort | What it bought |
@@ -246,6 +356,8 @@ unattended:
 | **GEX dealer positioning** | Greeks, aggregates, hypothesis harness | The confound-control methodology, and `dist_to_flip` |
 | **Bulk/block deals** | A fetcher, parser, table, tests | Ruled out a plausible label conclusively, with a measured reason |
 | **Stages 1–4** | Four models | The evaluation discipline that makes Stage 5 believable |
+| **The detector as a trading signal** | One measurement | The second reframe: magnitude, not direction |
+| **Features as entry filters** (Gate 1) | An evaluation harness | A working strategy, a reusable cost model, and a measured negative |
 
 None of that was wasted. The measurement apparatus Stage 5 was judged by — the
 partial control, the placebo, the period bootstrap, the counterparty check — is
@@ -258,9 +370,12 @@ entirely the product of four things that did not work.
 | | |
 |---|---|
 | **Data** | 2021-08-02 → 2026-09-04, 217 symbols, all tables 1:1, health gate PASS |
-| **Established, positive** | `basis_excess_mean` detects MF accumulation (+0.1374, 18/19) |
-| **Established, negative** | FII accumulation is momentum; GEX does not predict volatility; no flow forecasting beats the calendar; no persistent regimes |
-| **Committed forward predictions** | 2 nowcast records, scorable ~2026-11-14 |
-| **Open** | Monthly MF portfolio scrape (the only true out-of-sample test); replacing `basis_excess_med` with `fut_basis_pct` in Stage 1; index-inclusion events as a better instrument for Stage 3 |
+| **Established, positive (research)** | `basis_excess_mean` detects MF accumulation (+0.1374, 18/19) |
+| **Established, positive (trading)** | Strangle-selling earned a positive net-of-cost return in 6 of 6 years (+4.56%/trade) |
+| **Established, negative** | FII accumulation is momentum; GEX does not predict volatility; no flow forecasting beats the calendar; no persistent regimes; the detector does not reach a trading outcome; no entry filter beats chance; a stop loss harms |
+| **Committed forward predictions** | 2 nowcast records (scorable ~2026-11-14) + 1 screen record |
+| **The binding constraint** | A −37.27% drawdown that nothing tested reduces, measured on a sample containing no severe crash |
+| **Open (research)** | Monthly MF portfolio scrape (the only true out-of-sample test); replacing `basis_excess_med` with `fut_basis_pct` in Stage 1; index-inclusion events as a better instrument for Stage 3 |
+| **Open (trading)** | Gate 3 — the first eligible record is October 2026's first trading day; verdict ~March 2027 |
 
 [← The models](12-the-models.md) · [Index](README.md) · Next: [Results →](14-results.md)

@@ -1,6 +1,6 @@
 # 16 — Running It Yourself
 
-[← Bugs and lessons](15-bugs-and-lessons.md) · [Index](README.md) · Next: [Glossary →](17-glossary.md)
+[← Bugs and lessons](15-bugs-and-lessons.md) · [Index](README.md) · Next: [Selling volatility →](17-selling-volatility.md)
 
 A beginner's operating guide. The authoritative version, with more operational
 detail, is [`docs/runbook.md`](../../runbook.md); this one explains *why* each
@@ -221,4 +221,36 @@ read as a spectacular failure.
 > reported as such. That is the entire point of having written it down in
 > advance.
 
-[← Bugs and lessons](15-bugs-and-lessons.md) · [Index](README.md) · Next: [Glossary →](17-glossary.md)
+---
+
+## 11. The monthly trading cycle
+
+Separate from everything above, and on its own calendar. The trading tool
+([Part III](17-selling-volatility.md)) runs **on the first trading day of each
+month** — not on a convenient day near it, for reasons
+[document 22 §2](22-forward-validation.md) explains.
+
+```bash
+# On the FIRST TRADING DAY of the month
+uv run mktmtm run-pipeline --mode no-etl                    # refresh features
+uv run mktmtm screen --capital 1000000 \
+    --out docs/trading/results/screens/screen-$(date +%F).md
+git add docs/trading/results/screens/ && git commit -m "screen: $(date +%F)"
+#                                        ^ the commit IS the evidence
+
+# Any time after an expiry
+uv run mktmtm score-screens
+```
+
+Three things to know:
+
+| | |
+|---|---|
+| **No ETL needed** | `--mode no-etl` refreshes features in minutes; the screen does not need the 3–5 hour ETL re-run |
+| **The date is a hard requirement** | The backtest measured 30-day positions entered on day one. A record entered later is excluded from Gate 3 — this has already cost the project one otherwise-valid record. |
+| **The commit is not bookkeeping** | It is the only external evidence of when the prediction existed. An uncommitted record is worth nothing to Gate 3 however good its numbers look. |
+
+`score-screens` can be run at any time; it reports the running record and the
+Gate 3 verdict, including the reason for every excluded month.
+
+[← Bugs and lessons](15-bugs-and-lessons.md) · [Index](README.md) · Next: [Selling volatility →](17-selling-volatility.md)

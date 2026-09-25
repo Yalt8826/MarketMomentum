@@ -20,6 +20,11 @@ explicit statement of what may and may not be claimed.
 | **5** — accumulation | Can we detect institutional accumulation per symbol? | ✅ **Positive** | Partial IC **+0.1374**, positive in **18 of 19 quarters**. |
 | — GEX | Does dealer gamma predict volatility? | ❌ **Negative** | Fails on sign, on magnitude, and against implied volatility. |
 
+**This document covers the research half only.** The trading branch has its own
+scoreboard — four gates, one passed, one failed, one built, one pending — in
+[document 20](20-does-it-make-money.md). The one-line summary of how the two
+connect is in §7a below.
+
 ---
 
 ## 2. Are these results trustworthy?
@@ -242,6 +247,36 @@ filter the evaluation uses. Expect ≈ +0.11. The null is 0.
 chance. A single bad November falsifies nothing; a run of them would. That is
 written into the record itself so nobody over-reacts to one number — including
 whoever is reading it.
+
+---
+
+## 7a. Can the positive result be traded?
+
+**No — and the reason is not the detector's fault.** This was measured directly,
+and it is what caused the project's second pivot
+([document 17](17-selling-volatility.md)):
+
+| Link | IC | Quarters positive |
+|---|---|---|
+| our score → MF accumulation | **+0.1351** | 18/19 |
+| MF accumulation → next quarter's return | +0.0502 | 12/19 |
+| **our score → next quarter's return** | **+0.0200** | 11/19 |
+
+The middle row is the one to read. **Even perfect knowledge of which stocks
+mutual funds are accumulating would barely predict returns** — because domestic
+funds are contrarian (−0.064, they buy what has been falling) and quarterly
+momentum is itself negative (−0.047) in this sample.
+
+So no improvement in detection could have reached a trading outcome. The chain
+breaks at a link the detector does not control.
+
+> **A detector can work and still be worthless to trade.** *Detecting what
+> someone does* and *profiting from what they do* are two different claims, and
+> this project established the first while measuring the second to be false.
+
+That finding is what sent the work to
+[Part III](17-selling-volatility.md), which sells magnitude instead of
+predicting direction.
 
 ---
 

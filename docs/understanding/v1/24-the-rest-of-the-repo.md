@@ -1,12 +1,13 @@
-# 18 — The Rest of the Repository
+# 24 — The Rest of the Repository
 
-[← Glossary](17-glossary.md) · [Index](README.md)
+[← Glossary](23-glossary.md) · [Index](README.md)
 
-Documents 01–17 follow the research story. But a repository is not only its
-research path, and several working components sit off to the side of it. This
-document accounts for **everything else**, so nothing in the codebase is
-unexplained — and ends with a map from every source file to the document that
-covers it.
+Documents 01–22 follow the two project stories: the research
+([01–16](README.md)) and the trading tool ([17–22](17-selling-volatility.md)).
+But a repository is not only its narrative path, and several working components
+sit off to the side of both. This document accounts for **everything else**, so
+nothing in the codebase is unexplained — and ends with a map from every source
+file to the document that covers it.
 
 ---
 
@@ -103,9 +104,32 @@ which is a testability decision:
 - `find_exit_day` takes a `Callable[[date], bool]` trading-day check rather than
   a live database cursor, **so its logic is unit-testable without a database.**
 
-Output goes to `backtest_results`, which is **currently empty** — the table
-exists, the engine works, no run has been persisted since the project's focus
-moved.
+Output goes to `backtest_results`.
+
+### It is no longer off to the side
+
+This section described a dormant component when it was written. It is now the
+centre of the project's second line of work: `feat/vol-selling-strategy` added
+**+518 lines** to `strangle.py` alone (trade economics, a stop loss, and three
+defect fixes) and built four modules around it.
+
+**The whole of [Part III](17-selling-volatility.md) is about this code**, and
+the numbers it produced — 7,706 trades, +4.56% mean return on margin, a −37.27%
+drawdown, and six silent defects found along the way. What follows there rather
+than here:
+
+| | |
+|---|---|
+| The strategy, precisely | [20 §1](20-does-it-make-money.md) |
+| `backtest/economics.py` — costs, margin, slippage | [18](18-what-a-trade-costs.md) |
+| `backtest/analysis.py` — the Gate 0 report | [20 §2](20-does-it-make-money.md) |
+| `backtest/filters.py` — feature evaluation | [20 §3](20-does-it-make-money.md) |
+| `serving/screen.py` — the daily tool | [21](21-the-daily-screen.md) |
+| `serving/scoring.py` — forward validation | [22](22-forward-validation.md) |
+
+Three of §3's listed gaps have since been closed by that work — the
+`PRIMARY KEY` now carries a `variant` column, a liquidity filter is enforced,
+and a stop loss was implemented and measured (and rejected).
 
 ---
 
@@ -191,8 +215,10 @@ bars, which automatically degrade to plain log lines when output is not a
 terminal (or when `MKTMTM_NO_PROGRESS=1` is set), so a redirected overnight log
 stays readable.
 
-`ranking/`, `serving/` and `models/` are **empty placeholder packages** — an
-`__init__.py` each and nothing else.
+`ranking/` and `models/` are **empty placeholder packages** — an `__init__.py`
+each and nothing else. `serving/` is no longer one: it holds `screen.py` (the
+daily trading tool) and `scoring.py` (forward validation), covered in
+[21](21-the-daily-screen.md) and [22](22-forward-validation.md).
 
 ---
 
@@ -221,10 +247,15 @@ stays readable.
 | `scripts/verify_db_health.py` | [09 §6](09-the-pipeline.md) |
 | `scripts/decile_spread.py` | [14 §3](14-results.md) |
 | `scripts/measure_delta_adjustment.py` | [10 §3](10-the-features.md) |
-| `backtest/strangle.py` | **§3, this document** |
+| `backtest/strangle.py` | **§3, this document** + [20 §1](20-does-it-make-money.md) |
+| `backtest/economics.py` | [18 — What a trade costs](18-what-a-trade-costs.md) |
+| `backtest/analysis.py` | [20 §2 — Gate 0](20-does-it-make-money.md) |
+| `backtest/filters.py` | [20 §3 — Gate 1](20-does-it-make-money.md) |
+| `serving/screen.py` | [21 — The daily screen](21-the-daily-screen.md) |
+| `serving/scoring.py` | [22 — Forward validation](22-forward-validation.md) |
 | `pipeline/process.py` | **§4, this document** |
 | `frontend*.py`, `ui/` | **§2, this document** |
 | `api.py` | **§1, this document** |
-| `config/`, `ranking/`, `serving/`, `models/` | **§7, this document** |
+| `config/`, `ranking/`, `models/` | **§7, this document** |
 
-[← Glossary](17-glossary.md) · [Index](README.md)
+[← Glossary](23-glossary.md) · [Index](README.md)

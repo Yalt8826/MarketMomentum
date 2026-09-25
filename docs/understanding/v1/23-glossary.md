@@ -1,6 +1,6 @@
 # 17 — Glossary
 
-[← Running it](16-running-it.md) · [Index](README.md) · Next: [The rest of the repo →](18-the-rest-of-the-repo.md)
+[← Forward validation](22-forward-validation.md) · [Index](README.md) · Next: [The rest of the repo →](24-the-rest-of-the-repo.md)
 
 Every term used anywhere in this folder, alphabetically. The document where it is
 introduced properly is linked.
@@ -24,7 +24,6 @@ dividends. Correct for returns and labels; **wrong** for strike selection.
 a coin flip. [11](11-machine-learning-basics.md)
 
 ## B
-
 **Basis** — futures price minus spot price. [03](03-futures-and-options.md)
 
 **`basis_excess`** — annualised basis minus the interest rate, i.e. the premium
@@ -52,6 +51,14 @@ tested. [11](11-machine-learning-basics.md)
 **Bootstrap** — resampling data many times to get a confidence interval.
 [11](11-machine-learning-basics.md)
 
+**Breakeven slippage** — the per-leg fill cost at which a strategy's edge
+reaches zero. Reported instead of a slippage estimate, because bhavcopy carries
+no bid/ask. Measured at **3.16% per leg**. [18](18-what-a-trade-costs.md)
+
+**Brokerage** — a broker's flat charge per order (₹20 assumed here). The
+largest single cost component at **57.9%**, because the strategy places 10–12
+orders per trade. [18](18-what-a-trade-costs.md)
+
 **Buildup quadrant** — OI direction crossed with price direction, giving an
 open-interest build a *direction*. [04](04-open-interest-the-footprint.md),
 [10](10-the-features.md)
@@ -61,7 +68,6 @@ named. Structurally selects microcaps, so it misses the F&O universe.
 [08](08-the-data.md)
 
 ## C
-
 **Call option (CE)** — the right to buy at a fixed price.
 [03](03-futures-and-options.md)
 
@@ -86,8 +92,14 @@ important raw field in this project.** [04](04-open-interest-the-footprint.md)
 **Cost of carry** — the interest component that makes a fair futures basis
 positive. [03](03-futures-and-options.md)
 
-## D
+**Credit** — the premium received for writing an option, in rupees. "Net
+credit" is after entry costs. [18](18-what-a-trade-costs.md)
 
+**Credit-to-margin** — net credit divided by margin blocked. What the daily
+screen orders by; an efficiency measure, **not** a prediction.
+[21](21-the-daily-screen.md)
+
+## D
 **Dealer** — a market maker who writes options and hedges the resulting exposure.
 Proxied here by NSE's `Pro` category. [02](02-who-trades-and-whales.md),
 [06](06-how-derivatives-move-markets.md)
@@ -98,6 +110,10 @@ here — **inverted from the US default, and measured**.
 
 **Decile spread** — average outcome of the top 10% minus the bottom 10% by your
 ranking. [14](14-results.md)
+
+**Degenerate chain** — a symbol-day where the underlying's price was written
+into every option's premium. 47 symbol-days; 83% fall on an expiry date; caused
+the backtest's impossible −1,677% trade. [15](15-bugs-and-lessons.md)
 
 **Delta (Δ)** — how much an option moves when the stock moves ₹1; equivalently,
 the share-equivalent exposure. [05](05-pricing-iv-and-greeks.md)
@@ -113,6 +129,10 @@ pensions. [02](02-who-trades-and-whales.md)
 
 **`dist_to_flip`** — distance from spot to the gamma-flip level. The best dealer
 feature, and invariant to the sign convention. [10](10-the-features.md)
+
+**Drawdown** — the peak-to-trough fall in a book's cumulative value. The
+number that makes people stop. Measured here at **−37.27%**, and unmitigated.
+[20](20-does-it-make-money.md)
 
 **DTE** — days to expiry. [03](03-futures-and-options.md)
 
@@ -142,12 +162,15 @@ phenomenon** (IC +0.360). [02](02-who-trades-and-whales.md), [14](14-results.md)
 [03](03-futures-and-options.md)
 
 ## G
-
 **Gamma (Γ)** — how fast delta changes. Drives forced dealer hedging.
 [05](05-pricing-iv-and-greeks.md)
 
 **Gamma flip** — the price at which net dealer gamma crosses zero.
 [05](05-pricing-iv-and-greeks.md)
+
+**Gate** — a pre-registered test with a numeric pass mark fixed before the
+result exists, that can stop the work, and whose outcome is published at the
+same resolution either way. [19](19-the-four-gates.md)
 
 **GEX** — gamma exposure. The project's second abandoned hypothesis.
 [06](06-how-derivatives-move-markets.md), [10](10-the-features.md)
@@ -164,7 +187,6 @@ pipeline on failure. [09](09-the-pipeline.md)
 states. Stage 2; found no persistent states. [12](12-the-models.md)
 
 ## I
-
 **IC (Information Coefficient)** — rank correlation between a prediction and the
 outcome. The project's main metric. [11](11-machine-learning-basics.md)
 
@@ -172,6 +194,10 @@ outcome. The project's main metric. [11](11-machine-learning-basics.md)
 
 **Identifiability** — whether the data determines a unique answer. Stage 3's
 per-symbol allocation is **not** identifiable. [12](12-the-models.md)
+
+**In-sample** — measured on the same data used to choose the method. Every
+Gate 0 and Gate 1 number is in-sample; Gate 3 is the remedy.
+[19](19-the-four-gates.md)
 
 **ITM (in the money)** — a strike already profitable to exercise.
 [03](03-futures-and-options.md)
@@ -181,7 +207,6 @@ Also the project's biggest nuisance variable.
 [05](05-pricing-iv-and-greeks.md)
 
 ## L
-
 **Label** — the answer a model is trained against. **This project's central
 problem is that no per-symbol institutional label exists** in daily data.
 [07](07-the-project-idea.md)
@@ -192,10 +217,16 @@ problem is that no per-symbol institutional label exists** in daily data.
 **LLP (Learning from Label Proportions)** — learning when only group totals are
 observed. Stage 3. [11](11-machine-learning-basics.md)
 
-**Lot size** — shares per contract; revised periodically by NSE.
-[03](03-futures-and-options.md)
+**Lot size** — the fixed bundle of shares one derivatives contract covers; you
+cannot trade a fraction of one. Set per symbol by NSE and revised over time (852
+change-points here). Converts points per share into rupees.
+[03](03-futures-and-options.md) · [18](18-what-a-trade-costs.md)
 
 ## M
+**Margin** — collateral the exchange requires from an option writer, held for
+the life of the position and returned on close. Not a cost, but the correct
+denominator for return. Modelled here as 12% of contract notional — an
+approximation, swept ±25%. [18](18-what-a-trade-costs.md)
 
 **Market impact** — the price damage your own size does to you.
 [01](01-what-is-a-market.md)
@@ -237,7 +268,6 @@ strikes of the same expiry that day. [10](10-the-features.md)
 where leveraged bets show up. [03](03-futures-and-options.md)
 
 ## P
-
 **Partial correlation** — correlation remaining after a control variable is
 removed. **The project's decisive tool.**
 [11](11-machine-learning-basics.md)
@@ -247,6 +277,10 @@ market-wide, therefore blind to symbols. [08](08-the-data.md)
 
 **Placebo** — re-running on shuffled labels; the score should collapse to zero.
 [11](11-machine-learning-basics.md)
+
+**Pre-registration** — writing the success criterion down before seeing the
+result. Borrowed from clinical trials, for the same reason.
+[19](19-the-four-gates.md)
 
 **Premium** — the price of an option. [03](03-futures-and-options.md)
 
@@ -277,7 +311,6 @@ dominating. [11](11-machine-learning-basics.md)
 with Yang-Zhang. [05](05-pricing-iv-and-greeks.md)
 
 ## S
-
 **SEBI** — the Indian securities regulator; source of the quarterly shareholding
 filings that are this project's only ground truth.
 [01](01-what-is-a-market.md), [08](08-the-data.md)
@@ -288,14 +321,39 @@ the contract never traded. [08](08-the-data.md)
 **Shareholding filing** — SEBI's quarterly per-symbol ownership breakdown.
 **The label.** [08](08-the-data.md)
 
+**Sharpe ratio** — return divided by volatility. Quoted here (2.16) and
+discounted: it systematically flatters strategies whose risk sits in a rare left
+tail. [20](20-does-it-make-money.md)
+
+**Short strangle** — selling an out-of-the-money call and an out-of-the-money
+put on the same underlying and expiry. Profits if the stock stays between the
+strikes; loses on a large move in either direction. The strategy of Part III.
+[17](17-selling-volatility.md)
+
 **SIP** — Systematic Investment Plan; monthly retail money flowing into mutual
 funds. [02](02-who-trades-and-whales.md)
+
+**Slippage** — the gap between the price you assume and the price you get.
+Unmeasurable here, because bhavcopy publishes no bid or ask. See *breakeven
+slippage*. [18](18-what-a-trade-costs.md)
+
+**SPAN** — the exchange's real margin calculation, from a daily risk array NSE
+does not publish. Cannot be reproduced from bhavcopy; approximated instead.
+[18](18-what-a-trade-costs.md)
 
 **Spot price (S)** — the current price of the actual share.
 [01](01-what-is-a-market.md)
 
+**Stop loss** — closing a position once a loss reaches a set size. Measured at
+1.5×/2×/3× the entry credit and **rejected**: it worsened return, worst trade,
+drawdown and Sharpe simultaneously. [20](20-does-it-make-money.md)
+
 **Strike (K)** — the fixed price written into an option contract.
 [03](03-futures-and-options.md)
+
+**STT** — Securities Transaction Tax; 0.1% of premium turnover on the **sell
+side only**. Rose from 0.0625% in October 2024 — one of two candidate
+explanations for the strategy's decaying edge. [18](18-what-a-trade-costs.md)
 
 ## T
 
@@ -313,26 +371,37 @@ comparable across company sizes. [07](07-the-project-idea.md)
 legacy column names on ingest. [08](08-the-data.md)
 
 ## V
-
 **Vanna** — how delta changes when volatility changes.
 [05](05-pricing-iv-and-greeks.md)
 
+**Variant** — a labelled parameter set within one backtest run (`base`,
+`stop1.5`, …). Setting it late rather than at row creation merged every
+variant's skipped months into the base run. [15](15-bugs-and-lessons.md)
+
 **Vega (ν)** — sensitivity to a change in volatility.
 [05](05-pricing-iv-and-greeks.md)
+
+**Volatility risk premium** — the tendency of option buyers to pay slightly
+more than an option's expected cost, because insurance is worth more to a hedger
+than its fair price. The economic source of the strangle strategy's return.
+[17](17-selling-volatility.md)
 
 **Volume** — contracts traded today, including churn. Not open interest.
 [04](04-open-interest-the-footprint.md)
 
 ## W
-
-**Walk-forward** — repeated expanding train/test splits through time.
-[11](11-machine-learning-basics.md)
+**Walk-forward** — repeated expanding train/test splits through time: choose
+the method using only data prior to each period, score it on the next. The
+honest version of a backtest; Gate 1's walk-forward was negative for five of six
+features. [11](11-machine-learning-basics.md) · [19](19-the-four-gates.md)
 
 **Whale** — a participant large enough that their trading is itself an event.
 [02](02-who-trades-and-whales.md)
 
-**Writer** — the seller of an option; takes the fee and the open-ended risk.
-Institutional on 99.9% of days. [03](03-futures-and-options.md)
+**Writer** — the seller of an option, who receives the premium and carries the
+open-ended obligation. The insurer side of the trade. Institutional desks are
+net writers of calls on **99.9%** of days.
+[03](03-futures-and-options.md) · [17](17-selling-volatility.md)
 
 ## X
 
@@ -353,4 +422,4 @@ outlier-strike detector. [10](10-the-features.md)
 Correct for comparability, and **wrong for measuring persistence** — it produced
 the project's largest and most spurious number. [15](15-bugs-and-lessons.md)
 
-[← Running it](16-running-it.md) · [Index](README.md) · Next: [The rest of the repo →](18-the-rest-of-the-repo.md)
+[← Forward validation](22-forward-validation.md) · [Index](README.md) · Next: [The rest of the repo →](24-the-rest-of-the-repo.md)

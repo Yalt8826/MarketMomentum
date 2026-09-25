@@ -5,10 +5,12 @@
 This may be the most useful document in the folder, and it is certainly the most
 transferable.
 
-Ten defects are recorded here (entry 9 bundles three related ones), plus a
-statistical artefact that was not a bug at all. **All but two were silent** —
-they raised no exception, failed no stage, and in one case made a stage report
-success while doing nothing.
+Sixteen defects are recorded here (entry 9 bundles three related ones), plus a
+statistical artefact that was not a bug at all. Entries 1–11 come from the
+research branches; entries 12–17 come from the trading branch
+([Part III](17-selling-volatility.md)) and were all found in a single week.
+**All but two were silent** — they raised no exception, failed no stage, and in
+one case made a stage report success while doing nothing.
 
 The two exceptions are worth naming up front, because they are the *good* kind:
 two of the three pipeline wrapper bugs in entry 9 crashed immediately. Those cost
@@ -281,6 +283,187 @@ purpose — comparability across symbols.)
 
 ---
 
+---
+
+# Part III — six more, from the trading branch
+
+All six produced plausible output and raised nothing. Two predated the branch.
+
+## How all six were found: one impossible number
+
+Gate 0's first run reported a **worst single trade of −1,677%** — a loss of
+sixteen times the margin posted. A short strangle cannot do that: the position
+is bounded by the underlying going to zero or to the moon within one month, and
+neither produces a sixteen-fold loss on a 12%-of-notional margin.
+
+**Every other statistic on that run looked fine.** Mean +4.79%, win rate 68.3%,
+Sharpe 2.22, six positive years. Nothing in the headline suggested a problem.
+
+Chasing that single number found three separate data defects. And here is the
+part worth internalising:
+
+| Stage | Mean return | Worst trade |
+|---|---|---|
+| Contaminated | +4.79% | **−1,677%** |
+| + liquidity gate | +4.15% | −1,677% |
+| + degeneracy gate, + persistence fix | **+4.56%** | **−245.8%** |
+
+The headline moved by **less than half a percentage point** while the worst
+trade fell by a factor of seven.
+
+> **The mean was never the contaminated statistic. The tail was** — and in a
+> premium-selling strategy the tail is the part that decides whether the book is
+> usable at all. A validation that checks only averages would have passed all
+> three defects.
+
+---
+
+## 12. The P&L dropped the replacement leg's credit
+
+**What was wrong.** Each weekly adjustment closes one leg and sells a
+replacement. The P&L accounting recorded the cost of buying back the old leg and
+**forgot the premium received for the new one.**
+
+**Why the direction matters.** It understated profit, which is the *safe*
+direction for a bug to err in — a strategy that looks worse than it is will not
+lose anyone money. It is still wrong, and it corrupted every month in which an
+adjustment happened, which is nearly all of them.
+
+> **Lesson:** a bug that errs conservatively is still a bug. "It only
+> underestimates" is not a reason to leave it; it is a reason it went unnoticed.
+
+---
+
+## 13. Untraded strikes were priced anyway
+
+**What was wrong.** NSE publishes a settlement price for **every listed
+strike**, including ones that nobody traded all day. Those settlements are
+*derived*, not transacted. The weekly hedge, looking for a replacement leg near
+a target price, would happily select one.
+
+**Extent:** 32 of 7,683 trades, −₹5.7 million of fictitious loss.
+
+**The fix.** A liquidity gate: a leg must have actually traded to be selectable.
+This is also why the live screen refuses `leg never traded today`.
+
+> **Lesson:** "a price exists for this instrument" and "you could have traded at
+> this price" are different claims, and most data sources only guarantee the
+> first.
+
+---
+
+## 14. Degenerate chains — the spot price written into every premium ⭐
+
+The instructive one.
+
+**What was wrong.** On some symbol-days, every element of the option chain
+carries a settlement equal to the *underlying's own price*. On NMDC 2022-10-25,
+all 206 chain elements showed a settle of **₹130.75 against a spot of ₹130.71**,
+with every delta at 0.0.
+
+**Extent:** 47 of 213,379 symbol-days — 0.022%. And **83% of them fall on an
+expiry date**, which is the clue to the mechanism.
+
+**Why neither obvious filter catches it:**
+
+| Filter you would reach for | Why it fails |
+|---|---|
+| "Ignore strikes with no volume" | Affected strikes include one with **2,492 lots traded** |
+| "A call cannot be worth more than the stock" | The corrupt value sits at **99.97% of spot** — inside any tolerance loose enough to permit a legitimate deep-in-the-money call |
+
+**And the check must be per expiry.** IOC 2022-06-29 is the same defect in
+partial form: 146 of 436 rows at the spot price, *all in the expiring series*,
+while the July and August series price normally. A whole-chain test sees 193
+distinct settles and passes it happily.
+
+**That single trade was the −1,677%.**
+
+> **Lesson:** a corruption that lands *inside* your plausibility bounds is
+> invisible to every bound you would think to set. The detection has to come
+> from structure — "these 206 different contracts cannot all be worth the same
+> thing" — not from range checks.
+
+---
+
+## 15. 3,308 rows never persisted, in every run
+
+**What was wrong.** `entry_date` was declared `NOT NULL`. A month with no
+trading days legitimately has no entry date. The writer logged the rejection and
+carried on.
+
+So every backtest run silently discarded 3,308 skipped months, **and reported
+success.** This had been happening since before the trading branch existed.
+
+**What it cost.** The skip taxonomy — a Gate 0 mandatory disclosure — was wrong
+by 23 percentage points. "51% of candidate months trade" was being computed
+against a denominator missing a fifth of its rows.
+
+> **Lesson:** this is entry 9's pipeline-wrapper bug wearing different clothes.
+> A stage that
+> catches its own write failures and continues is a stage that reports success
+> while losing data. If a row cannot be written, that is an error, not a log
+> line.
+
+---
+
+## 16. The variant was unset on skipped months
+
+**What was wrong.** `result["variant"]` was assigned inside `price_result()` —
+which a **skipped month never reaches**, because it returns before pricing.
+
+So every stop-loss variant run wrote its skipped months under the *default*
+variant, merging three runs' skip taxonomies into the base run's.
+
+**How it surfaced** — a row count that is arithmetically impossible:
+
+```
+variant    rows   priced
+stop1.5    7729     7729     ← every row priced, no skips at all
+base      15096     7706
+```
+
+A backtest over 15,096 candidate symbol-months cannot produce zero skips.
+
+> **Lesson:** metadata that *identifies* a row must be attached where the row is
+> **created**, not where it is **completed**. Any early return is a path that
+> skips the late assignment.
+
+---
+
+## 17. An unequal-sample comparison that looked like a finding
+
+Not a code defect. A **measurement** defect — and the most dangerous kind,
+because it produced a plausible, dramatic, publishable number.
+
+**What it looked like.** The first stop-loss comparison showed June 2023 at
+**−56.79%** under a 3× stop against +4.76% for base. A stop that turns a
+positive month into a catastrophe is a striking result.
+
+**What it was:**
+
+| 2023-06 | base | stop3 |
+|---|---|---|
+| Rows | 222 | 8 |
+| **Priced trades** | **2** | **8** |
+
+A stop provides an exit *before* the scheduled exit date, so months whose
+exit-day lookup fails under the base strategy get priced under the stop
+variants. **The comparison was measuring a different set of trades, not a
+different strategy.** On the common set of 7,706 trades the effect vanishes
+entirely: worst month −16.12% against −16.26%.
+
+**This is a repeat.** The research branch hit the identical trap in Stage 1,
+scoring a calendar baseline on 1,004 rows against the flow models' 556. Same
+trap, same fix — restrict to the common set — two branches apart.
+
+> **Lesson:** when a change appears to help or harm dramatically, check whether
+> it changed **which observations exist** before believing it changed their
+> outcomes. Any intervention that alters eligibility — a stop, a filter, a
+> different exit rule — can do this, and the resulting number is plausible in
+> both directions.
+
+---
+
 ## The lessons, collected
 
 1. **A silent wrong answer is worse than a crash.** Design for loud failure.
@@ -296,6 +479,17 @@ purpose — comparability across symbols.)
 10. **A standard technique can introduce a worse confound than it removes.**
 11. **Check whether your labels are correlated by construction before citing
     their opposition as validation.**
+12. **A bug that errs conservatively is still a bug** — and is harder to spot
+    for exactly that reason.
+13. **"A price exists" and "you could have traded there" are different claims.**
+14. **A corruption inside your plausibility bounds is invisible to those
+    bounds.** Detect it from structure, not from range checks.
+15. **Row-identifying metadata belongs where the row is created**, not where it
+    is completed.
+16. **When an intervention changes which observations exist, it has not been
+    compared to anything.** Restrict to the common set first.
+17. **Check the tail, not only the mean.** Three defects moved the headline by
+    less than half a point and the worst trade by a factor of seven.
 
 And the meta-lesson, which is why this project has a health gate, a placebo, a
 tripwire, and a partial-correlation rule:
