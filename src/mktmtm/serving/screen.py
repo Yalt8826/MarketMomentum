@@ -157,6 +157,25 @@ class ScreenResult:
     first_trading_day: date | None = None
     #: Symbols NSE had in an F&O ban on ``as_of`` (no new position may open).
     banned: frozenset[str] = frozenset()
+    #: When this screen was actually generated, if later than ``as_of``.
+    #:
+    #: ``as_of`` is the entry date — the trading day whose settlement prices the
+    #: position assumes, matching the backtested convention. A screen can
+    #: legitimately be *generated* after it, because bhavcopy only publishes
+    #: after the close: even a same-evening run uses prices that became
+    #: knowable only once the session ended.
+    #:
+    #: What makes the gap safe or unsafe is whether the market traded in
+    #: between, so the record states both dates and
+    #: :attr:`sessions_after_entry` rather than claiming it was written on the
+    #: entry date. ``None`` means generated on ``as_of``.
+    generated_on: date | None = None
+    #: Trading sessions present in our data *after* ``as_of``.
+    #:
+    #: ``0`` means no session has closed since the entry date, so the selection
+    #: could not have used information a trader lacked at that entry. Any
+    #: larger number is hindsight and the reader is handed it directly.
+    sessions_after_entry: int = 0
     #: Did the ban list actually resolve?
     #:
     #: ``False`` means the lookup failed, **not** that nothing was banned —
@@ -381,6 +400,9 @@ def run_screen(
             {i["symbol"] for i in catalog.get("individual_securities", []) if i.get("symbol")}
         )
 
+    cursor.execute("SELECT count(DISTINCT date) FROM option_metrics WHERE date > %s", (as_of,))
+    sessions_after_entry = int(cursor.fetchone()[0] or 0)
+
     secban_checked = True
     if banned is None:
         banned, secban_checked = _resolve_bans(as_of)
@@ -433,6 +455,7 @@ def run_screen(
         refusals=refusals, limits=limits,
         is_month_entry=is_month_entry, first_trading_day=first_trading_day,
         banned=banned, secban_checked=secban_checked,
+        generated_on=date.today(), sessions_after_entry=sessions_after_entry,
     )
 
 
@@ -537,7 +560,40 @@ def record_payload(result: ScreenResult) -> dict[str, Any]:
         "refusals": {k: sorted(v) for k, v in result.refusals.items()},
         "secban_checked": result.secban_checked,
         "banned": sorted(result.banned),
+        "generated_on": (
+            result.generated_on.isoformat() if result.generated_on else result.as_of.isoformat()
+        ),
+        "sessions_after_entry": result.sessions_after_entry,
     }
+
+
+def _provenance(result: ScreenResult) -> str:
+    """One line stating when this was generated relative to its entry date.
+
+    Never claims the record was written on the entry date. Bhavcopy publishes
+    after the close, so *every* screen is generated after its own entry date;
+    what decides whether that matters is how many sessions closed in between,
+    and that number is stated rather than argued about.
+    """
+    generated = result.generated_on or result.as_of
+    if generated == result.as_of:
+        return f"Generated {generated}, the entry date itself."
+
+    n = result.sessions_after_entry
+    if n == 0:
+        return (
+            f"Generated {generated}, after the {result.as_of} entry date — but "
+            f"**no trading session has closed in between** (0 sessions in the "
+            f"data after {result.as_of}), so this selection used no information "
+            f"a trader lacked at the entry. The backtest itself enters at that "
+            f"day's settlement, which is only knowable after the close."
+        )
+    return (
+        f"⚠️ Generated {generated}, **{n} trading session(s) after** the "
+        f"{result.as_of} entry date. The selection could have used information "
+        f"unavailable at the entry, and the entry prices are correspondingly "
+        f"stale. Treat this as hindsight-contaminated."
+    )
 
 
 def write_screen_record(result: ScreenResult, path: Any, overwrite: bool = False) -> Any:
@@ -578,9 +634,11 @@ def write_screen_record(result: ScreenResult, path: Any, overwrite: bool = False
     lines = [
         f"# Screen — {result.as_of}",
         "",
-        f"**Written {result.as_of}, before any outcome exists.** "
+        f"**Entry date {result.as_of}, before any outcome exists.** "
         f"{len(result.selected)} positions selected from {len(result.candidates)} "
         f"tradeable candidates.",
+        "",
+        _provenance(result),
         "",
         calibration,
         "",

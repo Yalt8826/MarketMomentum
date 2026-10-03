@@ -259,7 +259,8 @@ class _Cursor:
         self._result: tuple = (as_of,)
 
     def execute(self, sql: str, params: tuple = ()) -> None:
-        self._result = (self._as_of,)
+        # The session-count probe wants an int; the date probes want a date.
+        self._result = (0,) if "count(DISTINCT date)" in sql else (self._as_of,)
 
     def fetchone(self) -> tuple:
         return self._result
@@ -358,3 +359,72 @@ def test_a_failed_lookup_degrades_rather_than_raising(monkeypatch) -> None:
 
     assert banned == frozenset()
     assert checked is False
+
+
+# ════════════════ provenance: entry date vs generation date ════════════════
+#
+# Every screen is generated after its own entry date, because bhavcopy only
+# publishes after the close. What decides whether that is safe is how many
+# sessions closed in between, so the record states it instead of claiming it
+# was written on the entry date.
+
+
+def _with_provenance(generated_on: date | None, sessions: int) -> ScreenResult:
+    return ScreenResult(
+        as_of=AS_OF,
+        candidates=[_candidate("ACME", 50_000.0)],
+        selected=[_candidate("ACME", 50_000.0)],
+        refusals={},
+        limits=RiskLimits(),
+        generated_on=generated_on,
+        sessions_after_entry=sessions,
+    )
+
+
+def test_record_never_claims_it_was_written_on_the_entry_date(tmp_path: Path) -> None:
+    result = _with_provenance(date(2025, 9, 3), 0)
+    text = write_screen_record(result, tmp_path / "s.md").read_text()
+
+    assert "Written 2025-09-01" not in text
+    assert "Entry date 2025-09-01" in text
+    assert "Generated 2025-09-03" in text
+
+
+def test_zero_intervening_sessions_is_stated_as_safe(tmp_path: Path) -> None:
+    result = _with_provenance(date(2025, 9, 3), 0)
+    text = write_screen_record(result, tmp_path / "s.md").read_text()
+
+    assert "no trading session has closed in between" in text
+    assert "⚠️ Generated" not in text
+
+
+def test_intervening_sessions_are_flagged_as_hindsight(tmp_path: Path) -> None:
+    result = _with_provenance(date(2025, 9, 11), 7)
+    text = write_screen_record(result, tmp_path / "s.md").read_text()
+
+    assert "7 trading session(s) after" in text
+    assert "hindsight-contaminated" in text
+
+
+def test_same_day_generation_says_so(tmp_path: Path) -> None:
+    result = _with_provenance(AS_OF, 0)
+    text = write_screen_record(result, tmp_path / "s.md").read_text()
+
+    assert "the entry date itself" in text
+
+
+def test_payload_carries_provenance_fields() -> None:
+    from mktmtm.serving.screen import record_payload
+
+    payload = record_payload(_with_provenance(date(2025, 9, 3), 0))
+
+    assert payload["generated_on"] == "2025-09-03"
+    assert payload["sessions_after_entry"] == 0
+
+
+def test_payload_defaults_generated_on_to_as_of() -> None:
+    from mktmtm.serving.screen import record_payload
+
+    payload = record_payload(_with_provenance(None, 0))
+
+    assert payload["generated_on"] == AS_OF.isoformat()
