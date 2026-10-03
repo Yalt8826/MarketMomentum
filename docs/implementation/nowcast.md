@@ -27,10 +27,45 @@ last shareholding filing        most recent flow data       filing publishes
                      └─ 59 days of F&O footprint ─┘   └─ no label yet ─┘
 ```
 
-SEBI allows 21 days after a quarter to file, and NSE publication has run a few
-weeks behind that across this dataset. So there is always an **open window** of
-one to four months in which the F&O footprint is observable and the
-institutional holding is not.
+SEBI allows 21 days after a quarter to file. So there is always an **open
+window** in which the F&O footprint is observable and the institutional holding
+is not.
+
+> ### ⚠️ Correction (measured 2026-10-03): the window is ~3 weeks, not ~6
+>
+> This document previously said *"NSE publication has run a few weeks behind
+> that,"* and every `~2026-11-14` in the nowcast records follows from it. **That
+> was an assumption, never measured, and it is wrong by about three weeks.**
+>
+> The master API carries a **`broadcastDate`** field that `fetch_filing_index`
+> discards. Measured across 53 symbols and 1,087 filings:
+>
+> | Quarter end | n | Median lag | 90th pct | Max |
+> |---|---|---|---|---|
+> | 2025-09-30 | 53 | 16 d | **21 d** | **21 d** |
+> | 2025-12-31 | 53 | 19 d | **21 d** | 77 d |
+> | 2026-03-31 | 53 | 17 d | **21 d** | 143 d |
+> | 2026-06-30 | 53 | 17 d | **21 d** | 38 d |
+>
+> Pooled from 2024 onward: **50% within 17 days, 90% within 21, 95% within 26.**
+>
+> **The 90th percentile is exactly 21 days in every quarter** — the statutory
+> deadline binding hard. NSE does not run weeks behind it; it publishes
+> essentially *at* it. The long tails (77/143 days) are revisions and amended
+> filings, not initial publication.
+>
+> For the **2026-09-30** quarter this means roughly **21–26 October 2026**, not
+> mid-November. The precedent is clean: for the same quarter last year
+> (2025-09-30), **all 53 sampled symbols filed within 21 days.**
+>
+> **The frozen nowcast records are deliberately not edited.** Their
+> `Checkable from ~2026-11-14` line is now known to be conservative, but a
+> prediction record whose contents are revised after the fact is not a
+> prediction record. The correction lives here instead.
+>
+> A cross-sectional IC needs most of the universe, not all of it —
+> `MIN_SYMBOLS_PER_PERIOD` is 30 and the nowcast ranks 177 — so 90% coverage at
+> day 21 is comfortably sufficient.
 
 Ranking symbols over that window produces a claim that can be **scored later
 and can fail**. That is a materially different epistemic object from another

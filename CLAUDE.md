@@ -177,6 +177,12 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   global one would freeze a partially-updated table permanently; and the recomputed overlap is
   **not** rewritten, because those rows hold IV percentile/rank computed with a full 252-day
   history that a trailing window cannot reproduce.
+- **SEBI shareholding publishes ~21 days after quarter end, NOT ~6 weeks.** Measured over 1,087
+  filings across 53 symbols: median 17 days, **90th percentile exactly 21 in every quarter**
+  (the LODR Reg. 31 deadline), 95% within 26. The long tail (77-143 days) is revisions, not
+  initial publication. The docs' "a few weeks behind that" was an assumption and is wrong by
+  ~3 weeks, which is where every `~2026-11-14` came from. The master API's **`broadcastDate`**
+  field carries the real publication timestamp and `fetch_filing_index` currently discards it.
 - **Re-running `make-dataset` alone cannot repair IV/strike/Greek defects** — those are baked into
   `option_metrics` at ETL time, so a fix there requires a full ETL re-run (3–5 h for 5 years).
 - **`nsearchives.nseindia.com` static files serve FULL HISTORY; `www.nseindia.com/api/*` is

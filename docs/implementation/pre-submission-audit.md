@@ -572,6 +572,55 @@ cherry-picking still.
 
 ---
 
+## 9. When the nowcast can actually be scored
+
+**Measured 2026-10-03**, after the audit proper, because the answer changes the
+submission plan.
+
+The nowcast records say *"checkable from ~2026-11-14"*, which traces to a line in
+`nowcast.md`: *"SEBI allows 21 days after a quarter to file, and NSE publication
+has run a few weeks behind that."* The second half was an **assumption, never
+measured.**
+
+The master API carries a **`broadcastDate`** field that `fetch_filing_index`
+discards. Measured across 53 symbols and 1,087 filings:
+
+| Quarter end | n | Median lag | 90th pct | Max |
+|---|---|---|---|---|
+| 2025-09-30 | 53 | 16 d | **21 d** | **21 d** |
+| 2025-12-31 | 53 | 19 d | **21 d** | 77 d |
+| 2026-03-31 | 53 | 17 d | **21 d** | 143 d |
+| 2026-06-30 | 53 | 17 d | **21 d** | 38 d |
+
+Pooled from 2024 onward: **50% within 17 days, 90% within 21, 95% within 26.**
+
+**The 90th percentile is exactly 21 days in every quarter** — SEBI's LODR
+Regulation 31 deadline binding hard. NSE publishes essentially *at* the
+deadline, not weeks behind it. The long tails are revisions and amended filings.
+
+### Consequence
+
+For the quarter ending **2026-09-30**, the filings land around **21–26 October
+2026** — *before* an end-of-October submission, not three weeks after it. The
+precedent for this specific quarter is clean: in 2025-09-30, **all 53 sampled
+symbols filed within 21 days.**
+
+A cross-sectional IC needs most of the universe, not all of it
+(`MIN_SYMBOLS_PER_PERIOD` is 30; the nowcast ranks 177), so 90% coverage at day
+21 is sufficient.
+
+**The frozen records are not edited.** Their conservative "checkable from" line
+stands, because a prediction record revised after the fact is not a prediction
+record. The correction lives in `nowcast.md` and `CLAUDE.md`.
+
+> **The pattern, a third time.** This is the same failure as the catalog's "no
+> Yahoo spot source" and the archive's "NSE history cannot be fetched": a
+> plausible statement about the outside world, written once, never measured, and
+> then load-bearing. All three were wrong, and all three cost the project
+> something — here, nearly a scoreable forward test.
+
+---
+
 ## What this audit changed
 
 | | |
@@ -582,6 +631,7 @@ cherry-picking still.
 | **Claims corrected** | doc 22's provenance "demonstration"; the catalog's "no Yahoo spot source" |
 | **Gate 3** | 0 → 1 pending eligible record |
 | **New data sources identified** | 8, all with 5-year history |
+| **Unmeasured assumptions corrected** | 3 — NSE fetchability, catalog coverage, filing lag |
 | **Tests** | 568 → **601** |
 
 ### The pattern, again

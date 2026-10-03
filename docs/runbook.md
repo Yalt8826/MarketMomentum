@@ -172,7 +172,10 @@ market holidays. Wait and re-run that stage.
 The one dated commitment this project has.
 [`nowcast-2026-08-28.md`](results/nowcast-2026-08-28.md) predicts mutual-fund
 accumulation for the quarter ending **2026-09-30**, checkable once the filing
-publishes around **2026-11-14**.
+publishes around **2026-10-21 to 2026-10-26** — measured, not assumed: 90% of
+filings land within 21 days of quarter end in every quarter checked. The
+`~2026-11-14` in the frozen nowcast records is conservative by ~3 weeks; see
+`docs/implementation/nowcast.md`.
 
 ```bash
 uv run mktmtm run-pipeline                             # catch data up first
