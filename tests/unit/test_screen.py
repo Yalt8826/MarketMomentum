@@ -236,3 +236,125 @@ def test_context_columns_do_not_leak_private_sizing_inputs() -> None:
 
     assert "ctx_ce_ivr" in row
     assert "ctx__iv_30" not in row
+
+
+# ════════════════════════ the F&O ban check ════════════════════════════════
+#
+# Regression cover for a real defect: the first live screen (2026-09-04)
+# selected INOXWIND as its second-largest position by credit while INOXWIND was
+# in an F&O ban. No new position may be opened in a banned symbol, so that
+# position could not have been taken.
+
+
+class _Cursor:
+    """Minimal cursor: a max(date) / first-trading-day stub with no chain data.
+
+    The ban check runs *before* the metrics lookup, so a symbol that is banned
+    is refused as banned even here, where every symbol would otherwise be
+    refused for having no data. That ordering is the thing under test.
+    """
+
+    def __init__(self, as_of: date) -> None:
+        self._as_of = as_of
+        self._result: tuple = (as_of,)
+
+    def execute(self, sql: str, params: tuple = ()) -> None:
+        self._result = (self._as_of,)
+
+    def fetchone(self) -> tuple:
+        return self._result
+
+
+class _Conn:
+    def __init__(self, as_of: date) -> None:
+        self._cursor = _Cursor(as_of)
+
+    def cursor(self) -> _Cursor:
+        return self._cursor
+
+
+def _run(banned: frozenset[str]):
+    from mktmtm.serving.screen import run_screen
+
+    return run_screen(
+        _Conn(AS_OF),
+        as_of=AS_OF,
+        symbols=["INOXWIND", "ACME"],
+        banned=banned,
+    )
+
+
+def test_a_banned_symbol_is_refused_as_banned() -> None:
+    result = _run(frozenset({"INOXWIND"}))
+
+    reason = f"in F&O ban on {AS_OF}"
+    assert reason in result.refusals
+    assert result.refusals[reason] == ["INOXWIND"]
+    # And it is refused as *banned*, not lumped in with the missing-data names.
+    assert "INOXWIND" not in result.refusals.get("no data for this date", [])
+
+
+def test_an_unbanned_symbol_is_not_refused_for_a_ban() -> None:
+    result = _run(frozenset({"INOXWIND"}))
+
+    assert "ACME" not in result.refusals.get(f"in F&O ban on {AS_OF}", [])
+
+
+def test_supplied_bans_are_recorded_as_checked() -> None:
+    result = _run(frozenset({"INOXWIND"}))
+
+    assert result.secban_checked is True
+    assert result.banned == frozenset({"INOXWIND"})
+
+
+def test_unverified_bans_are_surfaced_in_the_record(tmp_path: Path) -> None:
+    # The failure mode this guards: an empty ban set that *looks* like a clean
+    # day. The record must say the check did not happen.
+    result = ScreenResult(
+        as_of=AS_OF,
+        candidates=[_candidate("ACME", 50_000.0)],
+        selected=[_candidate("ACME", 50_000.0)],
+        refusals={},
+        limits=RiskLimits(),
+        banned=frozenset(),
+        secban_checked=False,
+    )
+
+    path = write_screen_record(result, tmp_path / "screen.md")
+    text = path.read_text()
+
+    assert "UNVERIFIED" in text
+    assert "not a statement that nothing was banned" in text
+
+
+def test_a_checked_empty_ban_list_reads_as_checked(tmp_path: Path) -> None:
+    path = write_screen_record(_result(), tmp_path / "screen.md")
+    text = path.read_text()
+
+    assert "F&O ban list checked: 0 symbol(s) banned" in text
+    assert "UNVERIFIED" not in text
+
+
+def test_the_payload_carries_both_ban_fields() -> None:
+    from mktmtm.serving.screen import record_payload
+
+    payload = record_payload(_run(frozenset({"INOXWIND"})))
+
+    assert payload["secban_checked"] is True
+    assert payload["banned"] == ["INOXWIND"]
+
+
+def test_a_failed_lookup_degrades_rather_than_raising(monkeypatch) -> None:
+    from mktmtm.data.secban import SecBanError
+    from mktmtm.serving import screen as screen_mod
+
+    def _boom(session, day):
+        raise SecBanError("HTTP 503 — bans are UNVERIFIED")
+
+    monkeypatch.setattr("mktmtm.data.secban.fetch_secban", _boom)
+    monkeypatch.setattr("mktmtm.data.participant_oi.warm_session", lambda: object())
+
+    banned, checked = screen_mod._resolve_bans(AS_OF)
+
+    assert banned == frozenset()
+    assert checked is False

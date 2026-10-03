@@ -1142,6 +1142,10 @@ def screen_cmd(
         f"  {len(result.selected)} selected from {len(result.candidates)} tradeable "
         f"candidates ({sum(len(v) for v in result.refusals.values())} refused)"
     )
+    if result.secban_checked:
+        typer.echo(f"  F&O bans: {len(result.banned)} symbol(s) banned today")
+    else:
+        typer.echo("  !! F&O BANS UNVERIFIED — a position here may be un-openable")
     typer.echo(
         f"  margin committed Rs {result.total_margin:,.0f}"
         f" ({result.total_margin / limits.capital:.1%} of capital)"

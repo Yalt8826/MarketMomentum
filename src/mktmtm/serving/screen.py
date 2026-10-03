@@ -18,8 +18,10 @@ because a human may know something the data does not.
 
 What it therefore spends its effort on instead:
 
-- **Refusing** candidates it cannot price honestly, each with a typed reason.
-  Gate 0's skip taxonomy is a product feature here, not a data footnote.
+- **Refusing** candidates it cannot price honestly *or legally*, each with a
+  typed reason. Gate 0's skip taxonomy is a product feature here, not a data
+  footnote — and the F&O ban check was added because the first live run
+  selected INOXWIND while it was banned (see ``mktmtm.data.secban``).
 - **Sizing**: margin, credit, and a modelled loss at a defined move.
 - **Risk caps**: position count, capital committed, and sector correlation —
   since 15 strangles in one sector is one trade wearing fifteen hats.
@@ -153,6 +155,16 @@ class ScreenResult:
     #: rather than quietly averaging them in.
     is_month_entry: bool = True
     first_trading_day: date | None = None
+    #: Symbols NSE had in an F&O ban on ``as_of`` (no new position may open).
+    banned: frozenset[str] = frozenset()
+    #: Did the ban list actually resolve?
+    #:
+    #: ``False`` means the lookup failed, **not** that nothing was banned —
+    #: NSE publishes the file on every trading day, saying ``NIL`` when the
+    #: list is empty. Surfaced in the record because a selection made without
+    #: checking bans may contain a position that cannot be opened, and that is
+    #: a limit of the record rather than a detail of the run.
+    secban_checked: bool = True
 
     @property
     def total_margin(self) -> float:
@@ -330,8 +342,16 @@ def run_screen(
     symbols: list[str] | None = None,
     margin_model: MarginModel | None = None,
     brokerage_per_order: float | None = None,
+    banned: frozenset[str] | None = None,
 ) -> ScreenResult:
-    """Today's tradeable strangles, priced, capped and ordered."""
+    """Today's tradeable strangles, priced, capped and ordered.
+
+    ``banned`` overrides the live F&O ban-list lookup — pass a frozenset to
+    supply it (tests, or an offline run). Left as ``None``, the list is fetched
+    from NSE; if that fails the screen still runs but records
+    ``secban_checked=False``, because a silently-skipped ban check would let an
+    un-openable position into a committed record.
+    """
     from mktmtm.data.symbols import load_fno_catalog
 
     limits = limits or RiskLimits()
@@ -361,11 +381,21 @@ def run_screen(
             {i["symbol"] for i in catalog.get("individual_securities", []) if i.get("symbol")}
         )
 
+    secban_checked = True
+    if banned is None:
+        banned, secban_checked = _resolve_bans(as_of)
+
     lots = load_lot_sizes()
     candidates: list[Candidate] = []
     refusals: dict[str, list[str]] = {}
 
     for symbol in symbols:
+        if symbol in banned:
+            # Checked before the metrics lookup: a banned symbol is untradeable
+            # whatever its chain looks like, and "in F&O ban" is the more
+            # actionable refusal than "no data for this date".
+            refusals.setdefault(f"in F&O ban on {as_of}", []).append(symbol)
+            continue
         metrics = get_metrics_for_day(cursor, symbol, as_of)
         if not metrics:
             refusals.setdefault("no data for this date", []).append(symbol)
@@ -402,7 +432,33 @@ def run_screen(
         as_of=as_of, candidates=candidates, selected=selected,
         refusals=refusals, limits=limits,
         is_month_entry=is_month_entry, first_trading_day=first_trading_day,
+        banned=banned, secban_checked=secban_checked,
     )
+
+
+def _resolve_bans(as_of: date) -> tuple[frozenset[str], bool]:
+    """``(banned, checked)`` for ``as_of`` — never raises.
+
+    A failed lookup returns ``(frozenset(), False)`` so the screen still
+    produces output, but the ``False`` travels into the record. Returning an
+    empty set *without* that flag is the failure this whole check exists to
+    prevent: it reads exactly like a day on which nothing was banned.
+    """
+    from mktmtm.data.participant_oi import warm_session
+    from mktmtm.data.secban import SecBanError, fetch_secban
+
+    try:
+        return fetch_secban(warm_session(), as_of), True
+    except SecBanError as exc:
+        logger.warning("F&O ban list unavailable for %s: %s", as_of, exc)
+    except Exception as exc:  # noqa: BLE001 — the screen must still run
+        logger.warning("F&O ban list lookup failed for %s: %r", as_of, exc)
+    logger.warning(
+        "BANS UNVERIFIED for %s — a selected position may be un-openable; "
+        "the record will say so",
+        as_of,
+    )
+    return frozenset(), False
 
 
 # ═══════════════════════ the frozen record (Phase 3) ═══════════════════════
@@ -479,6 +535,8 @@ def record_payload(result: ScreenResult) -> dict[str, Any]:
         },
         "selected": [c.as_row() for c in result.selected],
         "refusals": {k: sorted(v) for k, v in result.refusals.items()},
+        "secban_checked": result.secban_checked,
+        "banned": sorted(result.banned),
     }
 
 
@@ -525,6 +583,18 @@ def write_screen_record(result: ScreenResult, path: Any, overwrite: bool = False
         f"tradeable candidates.",
         "",
         calibration,
+        "",
+        (
+            f"F&O ban list checked: {len(result.banned)} symbol(s) banned on "
+            f"{result.as_of}"
+            + (f" ({', '.join(sorted(result.banned))})" if result.banned else "")
+            + "."
+            if result.secban_checked
+            else "⚠️ **F&O bans UNVERIFIED.** NSE's ban list could not be "
+            "retrieved for this date, so a selected position may be one in "
+            "which no new position can legally be opened. This is a limit of "
+            "this record, not a statement that nothing was banned."
+        ),
         "",
         f"Code: `{payload['commit']}`",
         "",
