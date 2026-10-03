@@ -42,7 +42,7 @@ flowchart TB
         T3["<b>Gate 1</b> — do our features help?<br/>❌ FAIL, as predicted"]
         T4["Stop loss<br/>❌ measured, harmful"]
         T5["The screen + scoring harness<br/><i>refusals, caps, frozen record</i>"]
-        T6["<b>Gate 3</b> — forward<br/>⏳ 0 of 6 months"]
+        T6["<b>Gate 3</b> — forward<br/>⏳ 1 of 6 recorded"]
     end
 
     M0 --> M1 --> M2 --> M3 --> M4 --> B1
@@ -309,7 +309,7 @@ Four gates, every criterion fixed before the number existed:
 | **0** | Does strangle-selling make money net of costs? | ✅ **PASS** — +4.56%, 6/6 years, −37.27% drawdown |
 | **1** | Do our research features beat IV rank alone? | ❌ **FAIL** — nothing beat chance, including IV rank |
 | **2** | Build the tool | ✅ Built |
-| **3** | Does it hold forward, ≥6 months? | ⏳ **0 of 6**, answerable ~March 2027 |
+| **3** | Does it hold forward, ≥6 months? | ⏳ **1 of 6 recorded**, answerable ~March 2027 |
 
 And one intervention measured and rejected: a **stop loss**, tested at
 1.5×/2×/3× the entry credit, made *every* column worse — return, worst trade,
@@ -346,6 +346,53 @@ already existed. A near-doubling of capital that the tool refuses to count is
 the best demonstration available that the check works.
 [Document 22](22-forward-validation.md).
 
+### The pre-submission audit — October 2026
+
+Four weeks before submission, a session spent **checking rather than adding**.
+It is the last chapter of the story, and the one with the best ratio of effort
+to result.
+
+**It asked four questions and got four answers:**
+
+| Question | Answer |
+|---|---|
+| Is there a daily version of the strategy? | **No** — and the daily edge went *gross*-negative in 2024 |
+| Is NSE's data really unfetchable, as the deals work concluded? | **No** — eight more sources serve full history |
+| Did the refreshed pipeline build correctly? | Yes — health gate PASS, four suspicious signatures all documented behaviour |
+| Is the headline result's time gradient real? | **Yes** — it survives a constant-universe control |
+
+**Two more silent defects**, bringing the project's catalogue to nineteen. Both
+were found by a *correct* input rather than a wrong one, which is unusual and
+instructive:
+
+- **The screen had sold a stock it was not allowed to trade.** INOXWIND was in
+  an F&O ban on the day the first live screen picked it second. Found because a
+  survey of unrelated NSE data happened to list a familiar name.
+- **Gate 3's provenance check had never worked.** It answered "no commit" for
+  every record ever written, so the gate was unpassable. Found because a record
+  that genuinely *should* have passed was refused — and that is the only way it
+  *could* have been found, since a check that rejects everything looks correct
+  whenever its answer happens to be "reject."
+
+**One finding about the project's own foundations.** The symbol catalog is a
+frozen 2021 universe and now covers **177 of 213** live F&O names. Three symbols
+the health gate blamed on a missing price feed had simply been *renamed*
+(`TATAMOTORS → TMPV`, `LTIM → LTM`). The freeze is the right choice for the
+research — it prevents look-ahead in universe selection — but it had never been
+written down as a choice with a measured cost.
+
+**And Gate 3 finally has a record.** October's screen, entered on the month's
+first trading day and committed 24 days before its outcome. 1 of 6.
+
+The audit also reversed a judgement made during the same session: the advice not
+to generate that record was wrong, because no trading session had closed between
+its entry date and its creation. What *was* wrong was the record claiming to
+have been written on its entry date — every screen is necessarily written after
+the close it prices. The record now publishes how many sessions closed in
+between, so a reader audits the gap instead of trusting the prose.
+
+→ [`../../implementation/pre-submission-audit.md`](../../implementation/pre-submission-audit.md)
+
 ---
 
 ## What each abandonment cost, and taught
@@ -358,6 +405,7 @@ the best demonstration available that the check works.
 | **Stages 1–4** | Four models | The evaluation discipline that makes Stage 5 believable |
 | **The detector as a trading signal** | One measurement | The second reframe: magnitude, not direction |
 | **Features as entry filters** (Gate 1) | An evaluation harness | A working strategy, a reusable cost model, and a measured negative |
+| **A daily-horizon strategy** | One afternoon | The mechanism behind Gate 0's decay: the premium compressed, it was not a cost rise |
 
 None of that was wasted. The measurement apparatus Stage 5 was judged by — the
 partial control, the placebo, the period bootstrap, the counterparty check — is

@@ -110,7 +110,7 @@ flowchart TB
     G1 -->|pass| G2
     HONEST --> G2
     G2 -->|"✅ built"| G3
-    G3 -->|"⏳ 0 of 6 months"| PEND["Unanswerable<br/>until ~March 2027"]
+    G3 -->|"⏳ 1 of 6 recorded"| PEND["Unanswerable<br/>until ~March 2027"]
 
     style G0 fill:#1a3a1a,stroke:#4caf50,color:#fff
     style G1 fill:#4a1e1e,stroke:#ff6b6b,color:#fff
@@ -122,7 +122,7 @@ flowchart TB
 | **0** | Does strangle-selling make money after costs? | *Likely passes* | ✅ **PASS** |
 | **1** | Do this project's features beat implied-volatility rank alone? | ❌ ***Expected to fail*** | ❌ **FAIL** |
 | **2** | — build only — | — | ✅ Built |
-| **3** | Does it hold up forward, over ≥6 months, losses included? | *Unknown by design* | ⏳ **0 of 6** |
+| **3** | Does it hold up forward, over ≥6 months, losses included? | *Unknown by design* | ⏳ **1 of 6 recorded** |
 
 ### Gate 0 — is there a strategy at all?
 

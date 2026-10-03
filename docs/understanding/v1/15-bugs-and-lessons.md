@@ -5,10 +5,12 @@
 This may be the most useful document in the folder, and it is certainly the most
 transferable.
 
-Sixteen defects are recorded here (entry 9 bundles three related ones), plus a
+Eighteen defects are recorded here (entry 9 bundles three related ones), plus a
 statistical artefact that was not a bug at all. Entries 1–11 come from the
-research branches; entries 12–17 come from the trading branch
-([Part III](17-selling-volatility.md)) and were all found in a single week.
+research branches; 12–17 from the trading branch
+([Part III](17-selling-volatility.md)), found in a single week; and 18–19 from
+the [pre-submission audit](../../implementation/pre-submission-audit.md) of
+October 2026.
 **All but two were silent** — they raised no exception, failed no stage, and in
 one case made a stage report success while doing nothing.
 
@@ -464,6 +466,98 @@ trap, same fix — restrict to the common set — two branches apart.
 
 ---
 
+---
+
+## 18. The screen sold a stock it was not allowed to trade
+
+**What was wrong.** When a stock's total open interest across the market crosses
+95% of a limit NSE sets, the exchange puts it in a **ban period**. During a ban
+you may *close* existing positions but you may not *open* new ones. Selling a
+fresh strangle opens two new positions, so a banned stock simply cannot be
+traded that way.
+
+The screen had never read NSE's ban list. On its first live run it selected
+**INOXWIND as its second-largest position** — and INOXWIND was banned that day.
+The trade could not have been placed.
+
+**Extent.** Across every month-entry date in five years, **17 of 10,411**
+backtest trades (0.16%) entered on a banned stock. Tiny. But the live screen hit
+one immediately, **1 position in 6**, and the reason is the lesson:
+
+> Bans happen to stocks with heavy, crowded options activity — and heavy options
+> activity is exactly what the screen ranks highest. **The thing that causes the
+> ban and the thing that causes selection are the same thing.**
+
+So a 0.16% rate across all stocks became a 1-in-6 rate among *chosen* stocks. An
+error rate measured on a whole population tells you nothing about a selected
+sample when the selection and the error share a cause.
+
+**The fix, and the subtle part.** NSE publishes this file every trading day,
+including days when nothing is banned — those say `NIL`. So there are three
+possible answers, and two of them must never be confused:
+
+| Response | Means |
+|---|---|
+| a list of symbols | those are banned |
+| `NIL` | **definitely nothing is banned** |
+| no response at all | **we don't know** |
+
+If a failed download returned "nothing is banned," it would look exactly like a
+clean day and quietly let an un-tradeable position into a committed record. So a
+failed lookup raises, the screen records that bans went **unverified**, and the
+record says so on its face.
+
+> **Lesson:** a population error rate does not transfer to a selected sample
+> when selection and error share a cause. And "can I legally trade this?" is a
+> different question from "can I price this?" — the tool had answered the second
+> and never asked the first.
+
+---
+
+## 19. The forward-validation check had never worked ⭐
+
+The most consequential one in the project, and the best illustration of why
+silent failure is the theme of this document.
+
+**What was wrong.** Gate 3's entire purpose is to verify that a prediction was
+written down *before* its outcome existed, and the only trustworthy evidence of
+that is the git commit which introduced the file. A function called
+`committed_at` looked up that commit date.
+
+It asked git for the wrong path. It handed git a path relative to the project
+root while telling git to look from inside the `screens/` folder — so git
+searched for `screens/docs/trading/results/screens/screen-X.md`, found nothing,
+and reported "no commit."
+
+**It reported "no commit" for every record ever written.** Which meant every
+record failed the provenance test, which meant **Gate 3 could never be passed**,
+no matter how many honest months were recorded.
+
+**Why nobody noticed.** Two reasons, and together they are the whole lesson:
+
+1. **It failed in the safe direction.** Rejecting everything meant the eight
+   backdated screens were still rejected. The *output* was correct. The verdict
+   published in these documents was never wrong.
+2. **"I can't verify this" is a legitimate answer** for that function to give —
+   an uncommitted file genuinely has no commit date. So a universal "can't
+   verify" is indistinguishable from a project with no commits at all.
+
+It surfaced only in October 2026, when a record that genuinely *should* have
+passed was rejected. That is the general principle:
+
+> **A check that fails closed cannot be tested by anything it rejects.** You
+> have to hand it something that ought to pass. Until that happens you have no
+> evidence the check can say yes — only that it can say no.
+
+**A claim we had to withdraw.** [Document 22](22-forward-validation.md)
+presented the +94.55% exclusion as proof the check worked. It was not: those
+eight records were rejected because *everything* was rejected. Right answer,
+broken reason.
+
+> **Lesson:** write the passing case first. A test suite consisting entirely of
+> things that should fail will pass happily against a function that always fails.
+
+
 ## The lessons, collected
 
 1. **A silent wrong answer is worse than a crash.** Design for loud failure.
@@ -490,6 +584,10 @@ trap, same fix — restrict to the common set — two branches apart.
     compared to anything.** Restrict to the common set first.
 17. **Check the tail, not only the mean.** Three defects moved the headline by
     less than half a point and the worst trade by a factor of seven.
+18. **A population error rate does not transfer to a selected sample** when the
+    selection and the error share a cause.
+19. **A check that fails closed cannot be tested by what it rejects.** Hand it
+    a case that should pass, or you have not tested it at all.
 
 And the meta-lesson, which is why this project has a health gate, a placebo, a
 tripwire, and a partial-correlation rule:

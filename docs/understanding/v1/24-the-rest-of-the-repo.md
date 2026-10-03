@@ -115,7 +115,7 @@ defect fixes) and built four modules around it.
 
 **The whole of [Part III](17-selling-volatility.md) is about this code**, and
 the numbers it produced — 7,706 trades, +4.56% mean return on margin, a −37.27%
-drawdown, and six silent defects found along the way. What follows there rather
+drawdown, and eight silent defects found along the way. What follows there rather
 than here:
 
 | | |

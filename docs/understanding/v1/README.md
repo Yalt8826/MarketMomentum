@@ -70,7 +70,7 @@ The folder is in three parts plus two reference documents.
 | 12 | [The models, stage by stage](12-the-models.md) | All six modelling stages: what each asked, how it was built, and what it answered. |
 | 13 | [The journey](13-the-journey.md) | The chronological story — including the two approaches that were abandoned and why. Covers both `main` and this branch. |
 | 14 | [Results, in plain terms](14-results.md) | What we can and cannot claim, with the numbers translated out of statistics into English. |
-| 15 | [Bugs we found, and what they taught](15-bugs-and-lessons.md) | Sixteen defects, nearly all silent — eleven from the research, six from the trading branch. Arguably the most useful document in the folder. |
+| 15 | [Bugs we found, and what they taught](15-bugs-and-lessons.md) | Eighteen defects, nearly all silent — eleven from the research, six from the trading branch, two from the pre-submission audit. Arguably the most useful document in the folder. |
 | 16 | [Running it yourself](16-running-it.md) | The commands, in order, with timings and what to expect. |
 
 ### Part III — the trading tool
@@ -148,7 +148,7 @@ And for the trading tool:
 | Does selling strangles make money net of costs? | **Yes** — +4.56% per trade, positive in 6 of 6 years. |
 | Do our research features improve it? | **No.** Nothing beat a random filter — including implied-volatility rank. |
 | Does a stop loss reduce the risk? | **No.** It made return, worst trade, drawdown and Sharpe all worse. |
-| Has it been validated forward? | **Not yet.** 0 of 6 months; answerable around March 2027. |
+| Has it been validated forward? | **Not yet.** One eligible record in place (2026-10-01); 6 needed, answerable around March 2027. |
 
 Document 20 makes each of those precise.
 

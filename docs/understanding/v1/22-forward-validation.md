@@ -2,8 +2,9 @@
 
 [← The daily screen](21-the-daily-screen.md) · [Index](README.md) · Next: [Glossary →](23-glossary.md)
 
-Gate 3 has no result. It is **0 of 6 eligible months**, and will not be
-answerable until roughly **March 2027**.
+Gate 3 has no verdict yet. **One eligible record is in place** (2026-10-01,
+scoring from ~27 October) and five more are needed, so it will not be answerable
+until roughly **March 2027**.
 
 It is also the most interesting document in Part III, because what it *does*
 have is a demonstration — on this project's own work — of exactly how a backtest
@@ -109,7 +110,34 @@ GATE 3: INCOMPLETE — 0 of 6 months recorded
     8 — not committed before its outcome
 ```
 
-### Why this is the strongest evidence available that the check works
+### ⚠️ A correction: this was not evidence the check works
+
+An earlier version of this document presented the exclusion above as *"the
+strongest evidence available that the check works."* **That was wrong, and the
+reason is instructive enough to leave in rather than quietly edit out.**
+
+`committed_at` was broken from the day it was written. It asked git for the file
+using a path relative to the project root, while telling git to look from inside
+the `screens/` folder — so git searched for
+`screens/docs/trading/results/screens/screen-X.md`, found nothing, and answered
+"no commit." **It answered "no commit" for every record ever written**, so
+`provenance_verified` was false universally and **Gate 3 could never have been
+passed**, no matter how many honest months were recorded.
+
+The eight backdated screens were therefore refused because *everything* was
+refused. Right answer, broken reason.
+
+It stayed hidden because it failed in the **safe** direction — the output was
+correct and no published verdict was ever wrong — and because "I can't verify
+this" is a legitimate answer for that function to give. It surfaced in October
+2026 only when a record that genuinely *should* have passed was refused.
+
+> **A check that fails closed cannot be tested by anything it rejects.** You have
+> to hand it something that ought to pass. The fix, and tests exercising a real
+> git repository in both directions, are in
+> [document 15 entry 19](15-bugs-and-lessons.md).
+
+### Why the rule is still the right rule
 
 Any project can *claim* it has a strict validation rule. The rule only means
 something when it costs you something, and here it cost the most attractive
@@ -133,8 +161,15 @@ One genuinely forward record exists:
 six positions, ₹493,581 of margin, ₹100,642 of net credit, expiring 2026-09-29.
 It was committed on 2026-09-11, when the outcome could not be known.
 
-**It is excluded anyway**, because it entered on 2026-09-04 and the month's first
-trading day was 2026-09-01. Condition 1.
+**It is excluded anyway**, on two counts. It entered on 2026-09-04 when the
+month's first trading day was 2026-09-01 (condition 1) — and it contained
+**INOXWIND, which was in an F&O ban on its entry date** and so could not legally
+have been opened at all ([document 15 entry 18](15-bugs-and-lessons.md)).
+
+Its outcome is now known: **+0.30% portfolio return, worst trade −61.69%**,
+against a backtested +4.93% mean monthly. It contributes nothing to the verdict,
+and at one month — containing a position that could not have been taken — it is
+not evidence of much either way.
 
 That was an unforced error — the screen was run on the latest available data
 rather than on the correct date — and the fix is a discipline, not code: **run
@@ -147,7 +182,24 @@ What was *not* done is more instructive:
 > 2026-09-11 would claim fills at prices ten days stale — forward with respect
 > to the outcome, backward with respect to the entry.
 
-The first eligible record will be **October 2026's first trading day.**
+The first eligible record **is** October 2026's first trading day:
+`screen-2026-10-01.md` — 7 positions, ₹492,066 of margin, ₹117,269 of net
+credit, committed 2026-10-03 at 14:15 IST, 24 days before its 2026-10-27
+expiry. It scores from roughly 27 October.
+
+It was written two days after its entry date and **says so on its face**, which
+is the honest form of the thing this section is about. The gap is safe here for
+a reason the record states and the data verifies: **no trading session closed in
+between** (2026-10-02 was Gandhi Jayanti, 10-03 a Saturday), so the selection
+used no information a trader lacked at the 10-01 close.
+
+That distinction — *sessions closed*, not *days elapsed* — is the one that
+matters, and it is now computed rather than argued. Every screen is necessarily
+generated after its own entry date, because the backtest enters at the first
+trading day's **settlement** and bhavcopy publishes only after the close. A
+record claiming to have been written *on* its entry date was always the thing to
+fix, so `sessions_after_entry` now appears in every record, and a non-zero count
+prints as hindsight-contaminated.
 
 ---
 
@@ -170,7 +222,7 @@ published three null results at the same resolution as its one positive.
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | ≥ 6 eligible months, none omitted | ❌ **0 of 6** |
+| 1 | ≥ 6 eligible months, none omitted | ❌ **0 scored, 1 pending** |
 | 2 | Realised return consistent with Gate 0 | pending |
 | 3 | No month beyond twice Gate 0's worst (−16.12%) | pending |
 | 4 | Every record committed before its outcome | pending |
@@ -181,8 +233,8 @@ from October 2026.
 ```mermaid
 timeline
     title The road to a Gate 3 verdict
-    2026-09-04 : Screen run (excluded — wrong entry day)
-    2026-10-01 : First eligible record
+    2026-09-04 : Screen run (excluded — wrong entry day, and a banned symbol)
+    2026-10-01 : First eligible record — committed 10-03, scores ~10-27
     2026-11 : 2 of 6
     2026-12 : 3 of 6
     2027-01 : 4 of 6
@@ -226,15 +278,16 @@ enterprise.
 
 ## 8. The wider principle
 
-This project now has **three** dated, committed, falsifiable predictions:
+This project now has **four** dated, committed, falsifiable predictions:
 
 | Record | Predicts | Scorable |
 |---|---|---|
 | `nowcast-2026-08-28.md` | MF accumulation ranking, IC ≈ +0.1145 | ~2026-11-14 |
 | `nowcast-2026-09-06.md` | MF accumulation ranking, IC ≈ +0.1266 | ~2026-11-14 |
-| `screen-2026-09-04.md` | Six strangle positions | 2026-09-29 (Gate-3-excluded) |
+| `screen-2026-09-04.md` | Six strangle positions | scored: **+0.30%** (Gate-3-excluded) |
+| `screen-2026-10-01.md` | Seven strangle positions | ~2026-10-27 — **Gate 3's first** |
 
-All three can fail. That is what makes them worth having, and it is the habit
+All four can fail. That is what makes them worth having, and it is the habit
 this project would most like a reader to take away:
 
 > **Write the prediction down before the outcome exists, in a place whose date

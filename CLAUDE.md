@@ -179,6 +179,37 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
   history that a trailing window cannot reproduce.
 - **Re-running `make-dataset` alone cannot repair IV/strike/Greek defects** — those are baked into
   `option_metrics` at ETL time, so a fix there requires a full ETL re-run (3–5 h for 5 years).
+- **`nsearchives.nseindia.com` static files serve FULL HISTORY; `www.nseindia.com/api/*` is
+  bot-blocked.** The deals failure is a property of the API path, not of NSE, and the docs
+  generalised it too far. Verified available at 2021/2023/2024/2025/2026 dates with a warmed
+  session: participant *volume* (`fao_participant_vol_`), per-symbol daily **delivery %**
+  (`archives/equities/mto/MTO_`), 165 index closes with P/E and P/B (`ind_close_all_`), the F&O
+  ban list (`archives/fo/sec_ban/fo_secban_` — **not** under `content/`), MWPL, FII stats, the
+  equity cash bhavcopy, and sector constituents carrying an `Industry` column. See
+  `docs/data/nse-archive-survey.md`. **Always probe an old date**: a latest-day-only report like
+  `bulk.csv` is indistinguishable from a real archive if you only ask for today.
+- **A symbol in an F&O ban cannot be traded, only closed.** `data/secban.py` gates the screen.
+  Its failure semantics are the point: NSE publishes the file on every trading day and writes
+  `NIL` when nothing is banned, so `200 + NIL` (authoritatively empty) must never be confused
+  with a failed lookup. `fetch_secban` raises on any non-200 including the holiday 404, and the
+  screen records `secban_checked=False` rather than quietly proceeding. The live screen selected
+  a banned symbol before this existed.
+- **The 222-symbol catalog is a FIXED 2021 universe and covers 177 of 213 live F&O names (83%).**
+  36 trading symbols are absent (incl. SUZLON — rank 3 by OI — ADANIPOWER and TMPV) and 40
+  catalog symbols no longer trade. Three of the five "no Yahoo spot source" symbols were
+  *renamed*, not de-sourced: `TATAMOTORS→TMPV`, `LTIM→LTM`, PEL delisted. Keeping it frozen is
+  correct for the research (it avoids look-ahead in universe selection and preserves
+  comparability) and wrong for the screen; do not change the screen's universe mid-way through
+  Gate 3's window. See `docs/data/catalog-drift.md`.
+- **A screen record must never claim it was written on its entry date.** Bhavcopy publishes after
+  the close, so every screen is generated after the entry it prices. What matters is
+  `sessions_after_entry` — trading sessions closed in between — which the record publishes from
+  the data. 0 is safe; non-zero prints as hindsight-contaminated.
+- **A check that fails closed cannot be validated by anything it rejects.** `committed_at`
+  returned `None` for every record ever written (relative pathspec, `cwd` set to the file's own
+  parent), so Gate 3 was unpassable while reporting each record as "not committed before its
+  outcome". It surfaced only when a record that *should* have passed was refused. Write the
+  passing case first.
 
 ### Other things worth knowing
 
@@ -200,7 +231,7 @@ These encode past production bugs; the audit trail is in `docs/data/iv-integrity
 ### Docs
 
 **`docs/trading/README.md`** (**start here for the trading branch** — the whole story in
-one page: the four gates, the product, the six silent defects, and the honest limits),
+one page: the four gates, the product, the eight silent defects, and the honest limits),
 **`docs/trading/implementation/`** (the volatility-selling pivot, on branch
 `feat/vol-selling-strategy` — turning the project into a usable tool. Separate line of
 work from the research: the detector cannot be traded (score -> forward return +0.0200,
@@ -211,17 +242,19 @@ drawdown. **Gate 1 FAILED as predicted**: no feature beats chance, and neither d
 rank. **A stop loss was measured at 1.5x/2x/3x and makes every outcome worse.**
 `mktmtm screen` ships the daily tool — ordered by tradeability, not conviction,
 with typed refusals and a frozen dated record; `mktmtm score-screens` scores those
-records forward. **Gate 3 is at 0 of 6 eligible months**: a record counts only if it
-entered on the month's FIRST TRADING DAY and was committed to git BEFORE its outcome
-existed — eight backtested screens returning +94.55% cumulative were correctly
-excluded on that basis. Six silent defects found and fixed on
-the way — see `docs/trading/results/`),
+records forward. **Gate 3 has its first eligible record** (2026-10-01, 7 positions,
+committed 2026-10-03, scores from ~2026-10-27); five more are needed and the verdict
+lands ~March 2027. A record counts only if it entered on the month's FIRST TRADING DAY
+and was committed to git BEFORE its outcome existed. **Eight silent defects** found and
+fixed on the way — see `docs/trading/results/bugs-and-fixes.md`; note that defect 8
+means the provenance check had never actually worked, so the celebrated exclusion of
+eight backtested +94.55% screens was right for the wrong reason),
 **`docs/understanding/v1/`** (the ground-up explanation of the whole project for a reader
 with no market background, in three parts: **I (01-06)** markets → F&O → open interest → the
 Greeks; **II (07-16)** the research — project idea → data → pipeline → features → the six
-stages → results → the ten silent defects; **III (17-22)** the trading tool — why the
+stages → results → the silent defects (19 catalogued); **III (17-22)** the trading tool — why the
 detector cannot be traded → selling volatility → trade economics → the four gates → Gate 0/1
-and the stop loss → the daily screen → forward validation and its six further defects;
+and the stop loss → the daily screen → forward validation and its eight further defects;
 **23-24** glossary and a file-to-document map. Written from the documents below and consistent
 with them; update it when a headline number changes),
 `docs/runbook.md` (running the pipeline end to end: order, measured timings, the three
@@ -242,6 +275,18 @@ conventions and the inter-stage contracts. Stages 1–3 are **built**; each stag
 section records what was measured, negative results included),
 `docs/implementation/flow-features.md` (outlier-strike + futures-basis features: threshold
 measurements, the OI-units defect, and the per-symbol vs market-level results),
+**`docs/implementation/pre-submission-audit.md`** (the October 2026 audit, and the single most
+useful entry point for what changed last: the day-horizon negative result, the NSE archive
+survey, two silent defects — a banned symbol in a live record, and Gate 3's provenance check
+having never worked — the catalog-drift finding, Gate 3's first eligible record, and the
+constant-universe control that closed the one threat to the headline result),
+`docs/results/daily-horizon.md` (is there a day-to-day strategy? No: intraday is structurally
+impossible on EOD data, stock options are monthly-only, and the daily short-vol edge went
+**gross-negative in 2024** — which promotes "the premium compressed" over "STT rose" as the
+explanation for Gate 0's decay. Single-pass measurement, caveated as such),
+`docs/data/nse-archive-survey.md` (what is actually fetchable from NSE, the access rule, and
+what each source is worth),
+`docs/data/catalog-drift.md` (the fixed universe, measured: 177 of 213 live names),
 `docs/data/iv-integrity-audit.md` (price-basis and IV-solver defects + verified fixes),
 `docs/data/etl-integrity-change-report.md` (five-year build audit: the cache offset-map
 and spot-basis defects, the change set, re-run procedure and acceptance criteria),

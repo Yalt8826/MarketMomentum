@@ -57,7 +57,7 @@ Every criterion was fixed before the number existed.
 | **0** | Does strangle-selling make money net of costs? | ✅ **PASS** |
 | **1** | Do our research features beat IV rank alone? | ❌ **FAIL** |
 | **2** | Build the tool | ✅ Built |
-| **3** | Does it hold forward, ≥6 months? | ⏳ **0 of 6** |
+| **3** | Does it hold forward, ≥6 months? | ⏳ **1 of 6 recorded** |
 
 ### Gate 0 — PASS
 
@@ -117,19 +117,33 @@ genuine catastrophe gaps straight through it.
 
 → [`results/stop-loss.md`](results/stop-loss.md)
 
-### Gate 3 — 0 of 6
+### Gate 3 — 1 of 6 recorded
 
 A record counts only if it entered on the month's **first trading day** and was
 **committed to git before its outcome existed**.
 
-While validating the harness, eight screens generated for Feb–Sep 2026 returned
-a mean monthly portfolio return of +11.80% and a cumulative **+94.55%**. The
-harness excluded all eight — *"not committed before its outcome"*. A
-near-doubling the tool refuses to count is the best demonstration available that
-the check works.
+**The first eligible record is in place:** `screen-2026-10-01.md` — 7 positions,
+₹492,066 margin, ₹117,269 net credit, committed 2026-10-03 at 14:15 IST, 24 days
+before its 2026-10-27 expiry. It scores from ~27 October. Five more are needed;
+the verdict lands ~March 2027.
 
-The one live record is also excluded: it entered 2026-09-04 when the month's
-first trading day was 2026-09-01.
+Two records are excluded. The September one entered 2026-09-04 when the month's
+first trading day was 2026-09-01 — **and it contained INOXWIND, which was in an
+F&O ban and could not legally have been opened** (defect 7 below). Its outcome
+is now known: **+0.30% portfolio, worst trade −61.69%**, against a backtested
++4.93% mean monthly. One month, containing an un-openable position, so it is
+evidence of very little — but it is the only out-of-sample number the strategy
+has.
+
+And eight screens generated for Feb–Sep 2026 during harness validation returned
+a cumulative **+94.55%**; all were excluded as *"not committed before its
+outcome"*.
+
+> ⚠️ **That exclusion was right for the wrong reason.** Defect 8 below: the
+> provenance check had never worked, returning "no commit" for *every* record,
+> so Gate 3 was unpassable and everything was refused. An earlier version of
+> these docs called the +94.55% exclusion a demonstration that the check worked.
+> It was not. Fixed, with tests that exercise a real git repository.
 
 → [`results/gate-3-forward-validation.md`](results/gate-3-forward-validation.md)
 
@@ -155,9 +169,10 @@ What it spends its effort on instead:
 
 It states its own limits in its output, not only in these docs.
 
-## 5. Six silent defects
+## 5. Eight silent defects
 
-All six produced plausible output and raised nothing. Two predated this branch.
+All eight produced plausible output and raised nothing. Three predated this
+branch.
 
 | # | Defect | Extent |
 |---|---|---|
@@ -167,10 +182,27 @@ All six produced plausible output and raised nothing. Two predated this branch.
 | 4 | **3,308 rows never persisted**, in every run | skip taxonomy wrong by 23pp |
 | 5 | Variant unset on skipped months | every variant's skips merged into base |
 | 6 | Unequal-sample comparison | a −56.79% month that was an artefact |
+| 7 | **Screen selected a symbol in an F&O ban** | 17/10,411 backtest trades — but **1 of 6** live |
+| 8 | **Gate 3's provenance check never worked** | **the gate was unpassable**, every record refused |
 
-**How they were found**: Gate 0's first run reported a worst trade of
-**−1,677%** — 16× the margin posted. Every headline statistic looked fine. One
-impossible number found three defects.
+**How 1–6 were found**: Gate 0's first run reported a worst trade of **−1,677%**
+— 16× the margin posted. Every headline statistic looked fine. One impossible
+number found three defects.
+
+**How 7–8 were found** — both in the [October 2026
+audit](../implementation/pre-submission-audit.md), and both by a *correct* input
+rather than a wrong one. Defect 7 surfaced because a survey of unrelated NSE
+data happened to list a familiar symbol. Defect 8 surfaced because a record that
+genuinely *should* have passed was refused:
+
+> **A check that fails closed cannot be validated by anything it rejects.**
+> Defect 8 had been rejecting everything for as long as it existed, and its
+> output was correct the whole time.
+
+Defect 7 carries its own lesson about rates: 0.16% of all trades, but **1 in 6**
+of *selected* ones, because bans land on the high-IV, high-activity names the
+screen ranks highest. A population error rate does not transfer to a selected
+sample when the selection and the error share a cause.
 
 > The mean was never the contaminated statistic. The tail was — and in a
 > premium-selling strategy the tail is what decides whether the book is usable.
@@ -206,7 +238,8 @@ first is that missing crash.
 | **Margin is an approximation** | Not exchange SPAN, which bhavcopy does not publish |
 | **Cost rates unverified** | Brokerage is 57.9% of costs at an assumed ₹20 flat |
 | **No capital constraint in Gate 0** | The monthly portfolio assumes every eligible trade is funded |
-| **Sector cap is inert** | Implemented and tested; the catalog carries no sector field |
+| **Sector cap is inert** | Implemented and tested; the catalog carries no sector field — though NSE publishes one, see the [archive survey](../data/nse-archive-survey.md) |
+| **The universe is frozen at 2021** | Covers **177 of 213** live F&O names; 36 trading symbols are invisible to the screen, including SUZLON (rank 3 by OI). See [catalog-drift.md](../data/catalog-drift.md) |
 | **Everything is in-sample** | Until Gate 3 has six months |
 
 ## 8. Where to read next

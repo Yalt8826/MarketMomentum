@@ -14,7 +14,7 @@ same resolution as positive ones, following the research branch's practice.
 | **0** | Does strangle-selling make money net of costs? | ✅ **PASS** | [gate-0-base-strategy.md](gate-0-base-strategy.md) |
 | **1** | Do this project's features beat IV rank alone? | ❌ **FAIL** | [gate-1-feature-filters.md](gate-1-feature-filters.md) |
 | **2** | Ship the daily screen | ✅ **built** | [`mktmtm screen`](screens/) |
-| **3** | Does it hold forward, ≥ 6 months? | ⏳ **0 of 6** | [gate-3-forward-validation.md](gate-3-forward-validation.md) |
+| **3** | Does it hold forward, ≥ 6 months? | ⏳ **1 of 6 recorded** | [gate-3-forward-validation.md](gate-3-forward-validation.md) |
 
 ## Gate 0 in one table
 
@@ -40,9 +40,10 @@ decaying monotonically — 8.30% in 2021 to 1.09% in 2025.
 |---|---|
 | [Gate 0 — base strategy](gate-0-base-strategy.md) | The verdict, the four mandatory disclosures, and five reasons to discount it |
 | [Gate 1 — feature filters](gate-1-feature-filters.md) | The research features do not improve the strategy. Neither does IV rank. |
-| [Gate 3 — forward validation](gate-3-forward-validation.md) | 0 of 6 eligible months. The harness refuses to count a +94.55% backtest as forward evidence. |
+| [Gate 3 — forward validation](gate-3-forward-validation.md) | First eligible record in place (2026-10-01), 1 of 6. Also records why the +94.55% exclusion was right for the wrong reason. |
 | [The stop loss](stop-loss.md) | Measured at 1.5x/2x/3x. It costs return and buys no tail protection. |
-| [Bugs and fixes](bugs-and-fixes.md) | **Six** silent defects, how each was caught, and what each cost |
+| [Bugs and fixes](bugs-and-fixes.md) | **Eight** silent defects, how each was caught, and what each cost |
+| [Pre-submission audit](../../implementation/pre-submission-audit.md) | The October 2026 audit: defects 7–8, the catalog-drift finding, Gate 3's first record, and the constant-universe control |
 
 ## The finding most worth carrying
 

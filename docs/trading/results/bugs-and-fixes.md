@@ -2,14 +2,18 @@
 
 [Results index](README.md) · [Gate 0 verdict](gate-0-base-strategy.md)
 
-Six defects were found across Phases 0 to 3. **All six were silent**: none
-raised an exception, none failed a run, and two had been dropping or distorting
-data since before this branch existed.
+**Eight** defects were found across Phases 0 to 3 and the October 2026
+pre-submission audit. **All eight were silent**: none raised an exception, none
+failed a run, and three had been dropping or distorting data since before this
+branch existed.
 
 Defects 1–4 came out of making the backtester's P&L economically real. Defects
 5 and 6 surfaced later, during the stop-loss measurement, and are the more
 instructive pair — both would have produced a *published number* rather than a
-crash.
+crash. Defects **7 and 8** came out of the
+[pre-submission audit](../../implementation/pre-submission-audit.md): one let
+an un-tradeable position into a committed record, and the other had quietly
+disabled Gate 3 entirely.
 
 They are collected here because the *method* that found them transfers, and
 because three of the four are visible only from the tail of a distribution
@@ -340,6 +344,160 @@ common set.
 
 ---
 
+---
+
+## Defect 7 — the screen selected a symbol in an F&O ban
+
+**Found by** reading NSE's ban list for 2026-09-04 while surveying the archive
+for unrelated reasons, and recognising a name in it.
+
+### What was wrong
+
+```
+Securities in Ban For Trade Date 04-SEP-2026:
+1,INOXWIND   2,KAYNES   3,LICHSGFIN   4,SAIL
+```
+
+**INOXWIND was position #2 in the committed September screen record** —
+₹12,543 of credit against ₹57,155 of margin.
+
+When a symbol's market-wide open interest crosses 95% of its position limit, NSE
+places it in a **ban period**: existing positions may only be *reduced*, and no
+new ones may be created. Selling a fresh strangle creates new positions, so the
+position could not have been opened at all. Nothing in the project had ever read
+this file.
+
+### Extent
+
+Across all 62 month-entry dates, with 62 of 62 ban files retrieved:
+
+| | |
+|---|---|
+| Backtest trades entered on a banned symbol | **17 of 10,411 (0.16%)** |
+| Mean banned symbols per month-entry day | 0.6 |
+| Names affected | CANBK, PNB, BHEL, AMBUJACEM, HINDCOPPER ×2, SAIL, BIOCON, IDEA, INDUSTOWER, GRANULES, BANDHANBNK, RBLBANK ×3, MANAPPURAM |
+
+**Negligible in the backtest, material in the live tool** — and the reason is
+the interesting part:
+
+> The screen hit one on its **first ever run** — 1 of 6 positions — because bans
+> land on high-IV, high-activity names, and that is exactly what the screen
+> orders by. **The selection mechanism and the defect are correlated**, which is
+> how a 0.16% population rate becomes a 1-in-6 rate in production.
+
+A population-level error rate is therefore not a safe estimate of a *selected*
+sample's error rate, whenever the selection criterion and the error share a
+cause.
+
+### The fix, and the part that is the actual point
+
+`mktmtm.data.secban` fetches and parses the list. The URL sits under
+`archives/fo/sec_ban/`, **not** the `content/` prefix that serves participant OI
+and bhavcopy; the `content/` paths 404.
+
+The substance is the **failure semantics**. NSE publishes this file on every
+trading day, writing `NIL` on the title line when nothing is banned, so three
+cases must stay distinct:
+
+```
+200 + symbols  ->  those symbols are banned
+200 + NIL      ->  authoritatively zero bans
+anything else  ->  UNKNOWN — never "zero"
+```
+
+Returning an empty set for the third case would read exactly like a clean day —
+the silent-omission failure this project has already suffered twice. So
+`fetch_secban` **raises** on any non-200 including the holiday 404,
+`run_screen` degrades to `secban_checked=False` rather than failing, and the
+record **states on its face that bans went unverified**. The parser also
+rejects a file served for the wrong date rather than applying another day's
+bans.
+
+Verified end to end on the date of the defect: INOXWIND, LICHSGFIN and SAIL
+refused as `in F&O ban on 2026-09-04`, with the freed margin admitting
+GODREJPROP and VEDL.
+
+> **Lesson:** a population error rate does not transfer to a selected sample
+> when the selection and the error share a cause. And "legally tradeable" is a
+> gate distinct from "priceable" — the skip taxonomy had covered the second and
+> never considered the first.
+
+---
+
+## Defect 8 — Gate 3's provenance check had never worked ⭐
+
+The most consequential defect in the branch: it had silently disabled the gate
+that the entire forward-validation story rests on.
+
+**Found by** the October 2026 record being excluded as *"not committed before
+its outcome"* despite having been committed 24 days before its expiry.
+September's record — committed since `8e5073e` — resolved identically, which is
+what showed it was the check rather than the record.
+
+### What was wrong
+
+```python
+subprocess.run(["git", "log", "--diff-filter=A", "--format=%cs",
+                "--", str(path)], cwd=path.resolve().parent)
+```
+
+The pathspec was passed through **as given** while `cwd` was set to the file's
+own parent. `load_records` hands it a repo-root-relative path, so git resolved
+`docs/trading/results/screens/screen-X.md` *underneath* the screens directory,
+matched nothing, and returned `None`.
+
+Demonstrated three ways on the same file:
+
+| Invocation | Result |
+|---|---|
+| relative pathspec, `cwd` = the file's own dir (**as the code did**) | **empty** |
+| pathspec relative to that `cwd` | `2026-09-11` |
+| absolute pathspec | `2026-09-11` |
+
+### What it cost
+
+`committed_at` returned `None` for **every record ever written**. Therefore
+`provenance_verified` was false universally, `in_calibration` with it, and
+**Gate 3 could not be reached** however many valid months were recorded — while
+the report blamed each record for failing the one condition that is the entire
+point of the gate.
+
+### Why it stayed silent — the transferable part
+
+1. **It fails closed.** Excluding everything meant the eight backdated screens
+   were still correctly refused, so no published verdict was ever wrong. The
+   check appeared to be working because its *output* was right.
+2. **"Unverifiable" is an answer this function is allowed to give.** A universal
+   `None` is indistinguishable from a repository with no commits.
+
+> **A check that fails closed cannot be validated by anything it rejects.** It
+> took a *correct* input — a record that genuinely should have passed — to
+> reveal that the check rejected everything. Until October 2026 no such input
+> had ever been presented to it.
+
+### A claim this forces us to withdraw
+
+`docs/understanding/v1/22-forward-validation.md` called the +94.55% exclusion
+*"a better demonstration of the check than any passing test."* **It was not a
+demonstration of anything.** The eight records were refused because everything
+was refused. The exclusion was right for the wrong reason, and that document has
+been corrected.
+
+### The fix
+
+Resolve the path before using it as the pathspec. Tests now build a real git
+repo and commit into it, covering the repo-root-relative shape that failed, the
+absolute shape that worked, an uncommitted file, and a path outside any repo —
+the last two being the cases that must still return `None`.
+
+`score-screens` now reports the October record as **"nothing scored yet"**
+rather than a provenance failure, which is its actual state: conditions 1, 2
+and 4 met, awaiting the expiry.
+
+> **Lesson:** a safety check exercised only by cases it should reject has not
+> been tested. Write the passing case first.
+
+
 ## What the fixes did to the answer
 
 | Stage | Mean return | Worst trade |
@@ -385,10 +543,17 @@ along with fictional losses.
 10. **A dramatic result is a reason to check the denominator.** Before believing
     an intervention changed outcomes, check that it did not change which
     observations exist (Defect 6).
+11. **A population error rate does not transfer to a selected sample** when the
+    selection criterion and the error share a cause — 0.16% became 1-in-6
+    (Defect 7).
+12. **"Legally tradeable" is a separate gate from "priceable."** The skip
+    taxonomy covered the second and never considered the first (Defect 7).
+13. **A check that fails closed cannot be validated by anything it rejects.**
+    Present it a passing case, or you have not tested it (Defect 8).
 
 These extend the [research branch's own catalogue of silent
 defects](../../understanding/v1/15-bugs-and-lessons.md). The project's running
-total is **sixteen**, of which exactly one crashed.
+total is **eighteen**, of which exactly one crashed.
 
 That ratio is the argument for everything else in this repository — the health
 gate, the placebo, the leakage tripwire, the common-set discipline, and the

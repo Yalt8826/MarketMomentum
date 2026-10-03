@@ -622,6 +622,24 @@ result as validation.
 
 ---
 
+## 9a. A related negative, measured later
+
+[`daily-horizon.md`](daily-horizon.md) asks whether any of this works at a
+**daily** horizon. It does not, and the measurement is worth reading for one
+result that bears on the trading branch: the daily short-volatility edge went
+**gross-negative in 2024** — before costs — which promotes "the risk premium
+compressed" over "STT rose" as the explanation for Gate 0's eightfold decay.
+
+It also records a near-miss: ranking on `ce_iv_30` against a target containing
+`iv` gave **IC +0.4524**, which would have been the largest forward number in
+the project. It is circular. Scale-free it is +0.0534, and ±0.018 once IV is
+partialled out — the same answer Gate 1 reached monthly, reproduced daily.
+
+Single-pass measurement, no bootstrap or walk-forward; caveated as such on the
+page.
+
+---
+
 ## 10. What would change the answers
 
 In descending order of value per unit effort:

@@ -2,7 +2,8 @@
 
 [Results index](README.md) · [Gate 0](gate-0-base-strategy.md) · [Gate 1](gate-1-feature-filters.md) · [Stop loss](stop-loss.md)
 
-**Status: 0 of 6 eligible months.** This page will stay honest or stay empty.
+**Status: 0 of 6 scored; 1 eligible record pending.** This page will stay
+honest or stay empty.
 
 Harness built 2026-09-11 (`serving/scoring.py`, `mktmtm score-screens`).
 Specification: [`../implementation/06-phase-3-forward-validation.md`](../implementation/06-phase-3-forward-validation.md).
@@ -24,9 +25,37 @@ out-of-sample evidence this strategy will have.
 
 | Month | Entry | Positions | Portfolio return | Worst trade | Cumulative |
 |---|---|---|---|---|---|
-| — | — | — | — | — | — |
+| 2026-10 | 2026-10-01 | 7 | *pending — expiry 2026-10-27* | — | — |
 
-**Nothing eligible yet.** One record exists and is excluded; see §4.
+**One eligible record, not yet scoreable.** Its exit day is **2026-10-26**, so
+it contributes a number from roughly 27 October. A second record is excluded;
+see §4.
+
+### The October record
+
+| | |
+|---|---|
+| Entry | **2026-10-01** — the month's first trading day |
+| Generated | 2026-10-03, with **0 trading sessions closed in between** |
+| Committed | **2026-10-03 14:15:41 +0530** — 24 days before the outcome |
+| Positions | 7 — POLICYBZR, IDEA, KALYANKJIL, ANGELONE, PATANJALI, TATAELXSI, HINDZINC |
+| Margin | ₹492,066 (49.2% of capital) |
+| Net credit | ₹117,269 |
+| Expiry / exit | 2026-10-27 / 2026-10-26 |
+| F&O bans caught | **BANDHANBNK, SAIL** |
+
+Conditions 1, 2 and 4 are satisfied; condition 3 awaits the expiry.
+
+**On the generation date.** The record was written two days after its entry
+date, and says so on its face rather than claiming otherwise. That is safe here
+for a reason stated in the record itself: **no trading session closed in
+between** — 2026-10-02 was Gandhi Jayanti and 10-03 a Saturday — so the
+selection used no information a trader lacked at the 10-01 close. The backtest's
+own convention enters at the first trading day's *settlement*, which bhavcopy
+publishes only after the close, so every screen is necessarily generated after
+its own entry date. `write_screen_record` now reports `sessions_after_entry`
+from the data, and a non-zero count prints as hindsight-contaminated rather
+than being argued away.
 
 ## 3. What makes a record eligible
 
@@ -65,20 +94,51 @@ GATE 3: INCOMPLETE — 0 of 6 months recorded
     8 — not committed before its outcome
 ```
 
-A +94.55% cumulative return that the tool itself refuses to count is a better
-demonstration of the check than any passing test. `committed_at()` reads the
-git commit that introduced the record and compares it to the positions' expiry;
-an **uncommitted record cannot be verified and is excluded however good its
-numbers look**.
+A +94.55% cumulative return the tool refuses to count is the behaviour you want.
+`committed_at()` reads the git commit that introduced the record and compares it
+to the positions' expiry; an **uncommitted record cannot be verified and is
+excluded however good its numbers look**.
 
-## 4. The one existing record
+> ### ⚠️ A correction — this was not a demonstration of the check
+>
+> An earlier version of this page called the exclusion above *"a better
+> demonstration of the check than any passing test."* **That was wrong.**
+>
+> `committed_at` was broken from the day it was written: it passed a
+> repo-root-relative pathspec while setting `cwd` to the file's own directory,
+> so git matched nothing and it returned `None` for **every record ever
+> written**. `provenance_verified` was therefore false universally and **Gate 3
+> was unpassable.** The eight backdated screens were refused because
+> *everything* was refused.
+>
+> The failure was invisible precisely because it fails **closed**: the output
+> was right, the verdict was never wrong, and "unverifiable" is an answer the
+> function is allowed to give. It surfaced in October 2026 only when a record
+> that genuinely *should* have passed was refused.
+>
+> **A check that fails closed cannot be validated by anything it rejects.** The
+> fix and its tests are in
+> [`bugs-and-fixes.md` Defect 8](bugs-and-fixes.md); the provenance check now
+> works and is exercised against a real git repository in both directions.
+
+## 4. The excluded record
 
 [`screens/screen-2026-09-04.md`](screens/screen-2026-09-04.md) — 6 positions,
 ₹493,581 margin, ₹100,642 net credit, expiry 2026-09-29.
 
 It is genuinely forward: committed 2026-09-11, outcome unknown until 2026-09-29.
-But it is **excluded**, because it entered on 2026-09-04 and the first trading
-day of that month was **2026-09-01**.
+But it is **excluded** on two counts. It entered on 2026-09-04 when the first
+trading day of that month was **2026-09-01** — and it contained **INOXWIND,
+which was in an F&O ban on its entry date** and could not legally have been
+opened ([Defect 7](bugs-and-fixes.md)). The live screen now refuses banned
+symbols.
+
+**Its outcome is now known: portfolio +0.30%, worst trade −61.69%, net ₹1,414
+across 6 of 6 positions scored.** Against a backtested +4.93% mean monthly
+portfolio return. It stays excluded and contributes nothing to the verdict, but
+it is the only out-of-sample number the strategy has, and it is not
+encouraging — nor is it, at one month and with a position that could not have
+been opened, evidence of anything much either way.
 
 That was an unforced error — the screen was simply run on the latest available
 data — and the fix is a discipline, not code: **run the screen on the first
@@ -87,8 +147,14 @@ carries the warning on its face.
 
 > No 2026-09-01 record was manufactured to replace it. Generating one on
 > 2026-09-11 would claim fills at prices ten days stale — forward with respect
-> to the outcome, backward with respect to the entry. The first eligible record
-> will be **October 2026's first trading day**.
+> to the outcome, backward with respect to the entry.
+
+That reasoning turns on **how many sessions closed between the entry and the
+writing**, not on the calendar gap alone, and the October record makes the
+distinction concrete: written two days after its entry date with **zero**
+intervening sessions, where September's would have had seven. The screen now
+computes and publishes that count, so the judgement is auditable from the record
+rather than argued in prose.
 
 ## 5. The standard this page is held to
 
@@ -106,13 +172,14 @@ eligibility conditions in §3, and each one is reported with its reason.
 
 | # | Criterion | Status |
 |---|---|---|
-| 1 | ≥ 6 eligible months, none omitted | ❌ 0 of 6 |
+| 1 | ≥ 6 eligible months, none omitted | ❌ 0 scored, 1 pending |
 | 2 | Realised return consistent with Gate 0 | pending |
 | 3 | No month beyond twice Gate 0's worst (−16.12%) | pending |
 | 4 | Every record committed before its outcome | pending |
 
-**Verdict: INCOMPLETE.** Expected to become answerable around **March 2027** —
-six monthly cycles from October 2026.
+**Verdict: INCOMPLETE.** The first record is in place (2026-10-01) and scores
+from ~27 October. Expected to become answerable around **March 2027** — six
+monthly cycles from October 2026.
 
 ## 7. What six good months would and would not establish
 
