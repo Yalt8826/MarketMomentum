@@ -322,6 +322,32 @@ searches.
 | Large caps (above median OI) | +0.1665 | 79% of 19 | |
 | Small caps | +0.1055 | 79% of 19 | |
 
+**Constant-universe control** (added 2026-10-03,
+`scripts/check_constant_universe.py` → `models/evaluation/constant_universe.json`).
+Per-period symbol count is not constant — 126–144 through 2024-07, then 165–191
+from 2024-10, following NSE's late-2024 F&O eligibility expansion. A wider
+cross-section mechanically stabilises a per-period rank IC, and the step lands
+on the half boundary, so the gradient had to be re-measured on a fixed universe.
+Presence threshold swept rather than fixed at one arbitrary cut:
+
+| Min presence | Symbols | Per period | Full | 1st half | 2nd half | Gradient |
+|---|---|---|---|---|---|---|
+| none (published) | 209 | 151.9 | +0.1374 | +0.0701 | +0.1981 | +0.1280 |
+| ≥50% | 144 | 132.8 | +0.1394 | +0.0701 | +0.2017 | +0.1316 |
+| ≥70% | 136 | 127.6 | +0.1450 | +0.0753 | +0.2078 | +0.1326 |
+| ≥80% | 120 | 115.2 | +0.1352 | +0.0675 | +0.1961 | +0.1286 |
+| ≥90% | 93 | 91.6 | +0.1567 | +0.0940 | +0.2131 | +0.1191 |
+| 100% | 62 | 62.1 | +0.1537 | +0.1045 | +0.1980 | +0.0935 |
+
+Gradient stable at +0.119–0.133 across 50–90% presence; 73% retained at the
+100% cut. The shrinkage is the **first half rising** (+0.0701 → +0.1045), not
+the second half falling — the always-present names are the established, liquid
+ones and carry a stronger early signal, so composition *understated* the early
+period. Headline IC is not composition-inflated either: higher on cleaner
+universes (+0.1537 / +0.1567). Caveat: the 100% cut keeps 62 of 209 symbols and
+its first-half positive rate falls to 7 of 9, which is why the sweep is reported
+whole.
+
 **Bootstrap over periods: +0.1374, 95% CI [+0.0902, +0.1801] — excludes zero.**
 Resampling is over *periods*, not rows: ~150 symbols in one quarter share that
 quarter's market entirely, and treating them as independent draws would produce

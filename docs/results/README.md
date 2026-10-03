@@ -492,6 +492,49 @@ strength appears to scale with how much flow there is to detect, rather than
 being specific to 2024–26. But at 19 periods that partial gives p = 0.13: the
 best available explanation, not an established one.
 
+**The gradient is not sample composition** (checked 2026-10-03,
+`scripts/check_constant_universe.py`, raw JSON
+`models/evaluation/constant_universe.json`). Effective sample size was missing
+from the covariate list above, and it moves sharply inside the window:
+symbols carrying the feature in-quarter sit at 126–144 from 2021-10 to 2024-07,
+then step to 165–191 from 2024-10 onward. NSE widened F&O eligibility in late
+2024, so more names clear the feature's own `DTE >= 5` gate — and **the step
+lands almost exactly on the half boundary.** That is a real threat, because a
+wider cross-section mechanically stabilises a per-period rank IC: the second
+half could score higher with no change in the underlying signal.
+
+Holding the universe fixed and sweeping the presence threshold:
+
+| Min presence | Symbols | Per period | Full | First half | Second half | **Gradient** |
+|---|---|---|---|---|---|---|
+| (none — as published) | 209 | 151.9 | +0.1374 | +0.0701 | +0.1981 | **+0.1280** |
+| 50% of periods | 144 | 132.8 | +0.1394 | +0.0701 | +0.2017 | +0.1316 |
+| 70% | 136 | 127.6 | +0.1450 | +0.0753 | +0.2078 | +0.1326 |
+| 80% | 120 | 115.2 | +0.1352 | +0.0675 | +0.1961 | +0.1286 |
+| 90% | 93 | 91.6 | +0.1567 | +0.0940 | +0.2131 | +0.1191 |
+| **100% (constant universe)** | **62** | **62.1** | **+0.1537** | **+0.1045** | **+0.1980** | **+0.0935** |
+
+The gradient is **stable at +0.119 to +0.133 from 50% through 90% presence**,
+and narrows only at the strictest cut, to +0.0935 — 73% of the published value.
+The second-half IC barely moves at all (+0.1961 to +0.2131 everywhere).
+
+And the narrowing comes from the **first half rising** (+0.0701 → +0.1045), not
+the second half falling: the always-present names are the established, liquid
+ones, and they carry a stronger early signal than the full universe does. So
+composition accounts for at most a quarter of the gradient, in the direction of
+having *understated* the early period.
+
+Two side benefits worth recording. The headline IC is **not** inflated by
+composition — on cleaner universes it is *higher* (+0.1537 at 100% presence,
++0.1567 at 90%, against +0.1374 published). And the second half remains
+positive in 100% of its ten periods at every threshold.
+
+⚠️ The 100% cut keeps only 62 of 209 symbols, so its per-period cross-section
+is far narrower and each quarterly IC correspondingly noisier — first-half
+positive rate falls to 77.8% (7 of 9) from 88.9%. The sweep is reported in full
+rather than quoting the strictest cut alone, precisely so that trade-off is
+visible.
+
 **The detector runs forward.** `mktmtm nowcast` ranks symbols for the quarter
 SEBI has not yet disclosed. First run 2026-08-28: 177 symbols, 59-day window,
 calibrated IC +0.1145, **checkable from ~2026-11-14** — a prediction fixed

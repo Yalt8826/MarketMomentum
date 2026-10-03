@@ -453,6 +453,58 @@ So detection strength appears to scale with **how much flow there is to detect**
 rather than being specific to 2024–26. At 19 periods that partial gives p = 0.13:
 the best available explanation, not an established one.
 
+### And a second explanation, found later and ruled out
+
+That covariate list had a hole in it, spotted on 2026-10-03: **it never tested
+the size of the sample itself.**
+
+The number of symbols carrying the feature in a quarter is not constant. It sits
+at 126–144 from 2021 through mid-2024, then steps up to 165–191 — because NSE
+widened F&O eligibility in late 2024, so more names clear the feature's own
+"at least 5 days to expiry" gate.
+
+Why that is a threat: an IC is a correlation measured *within* each quarter, and
+a correlation over 190 names is simply less noisy than one over 130. So the
+second half could score higher purely because its cross-sections are wider —
+no change in the underlying signal at all. **And the step lands almost exactly
+on the half boundary**, which is the worst possible coincidence.
+
+The test is to hold the universe fixed: keep only symbols present in every
+period, so every quarter is the same width, and re-measure. Because "every
+period" is one arbitrary cut, the whole curve is swept:
+
+| Symbols must appear in… | Symbols kept | First half | Second half | **Gradient** |
+|---|---|---|---|---|
+| (no restriction — as published) | 209 | +0.0701 | +0.1981 | **+0.1280** |
+| ≥ 50% of quarters | 144 | +0.0701 | +0.2017 | +0.1316 |
+| ≥ 70% | 136 | +0.0753 | +0.2078 | +0.1326 |
+| ≥ 80% | 120 | +0.0675 | +0.1961 | +0.1286 |
+| ≥ 90% | 93 | +0.0940 | +0.2131 | +0.1191 |
+| **every quarter** | **62** | **+0.1045** | **+0.1980** | **+0.0935** |
+
+**The gradient survives.** It holds between +0.119 and +0.133 from 50% through
+90%, and shrinks only at the strictest cut — to +0.0935, 73% of the published
+figure. The second-half number barely moves anywhere (+0.196 to +0.213).
+
+The shape of the shrinkage is the interesting part. It is **not** that the second
+half falls; it is that the **first half rises**, from +0.0701 to +0.1045. The
+symbols present throughout are the established, liquid ones, and they carry a
+stronger early signal than the full universe did. So sample composition was
+*understating* the early period, not inflating the late one.
+
+A useful side effect: the headline +0.1374 is not inflated by composition
+either. On the cleaner universes it is *higher* — +0.1537 and +0.1567.
+
+⚠️ The strictest cut keeps only 62 of 209 symbols, so each quarterly
+correlation there rests on far fewer names and is noisier for it (the
+first-half positive rate drops to 7 of 9). That is exactly why the full sweep
+is published rather than the single strictest number.
+
+> **The habit this illustrates** is the one from [document 11](11-machine-learning-basics.md):
+> before believing that an effect changed over time, check whether your
+> *measurement* changed over time. Here the apparatus did change — and the
+> finding survived it, which is a stronger statement than never having asked.
+
 ### Honest limits
 
 - The effect is **modest**. Consistency, not size, is what makes it credible.
