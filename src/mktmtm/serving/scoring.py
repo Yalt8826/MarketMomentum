@@ -146,11 +146,21 @@ def committed_at(path: Path) -> date | None:
     """
     import subprocess
 
+    # The pathspec MUST be absolute. It was once passed through as given while
+    # cwd was set to the file's own parent, so a repo-root-relative path like
+    # "docs/trading/results/screens/screen-X.md" was resolved *under* the
+    # screens directory, matched nothing, and returned None — for every record
+    # ever written. That made ``provenance_verified`` False universally and
+    # Gate 3 unpassable, while reporting each record as "not committed before
+    # its outcome". The failure was safe (it excluded everything, so the eight
+    # backdated screens were still refused) and completely silent, because
+    # "unverifiable" is a legitimate answer this function is allowed to give.
+    resolved = Path(path).resolve()
     try:
         out = subprocess.run(
-            ["git", "log", "--diff-filter=A", "--format=%cs", "--", str(path)],
+            ["git", "log", "--diff-filter=A", "--format=%cs", "--", str(resolved)],
             capture_output=True, text=True, timeout=10, check=False,
-            cwd=path.resolve().parent,
+            cwd=resolved.parent,
         )
         lines = [line for line in out.stdout.split("\n") if line.strip()]
         return date.fromisoformat(lines[-1]) if lines else None

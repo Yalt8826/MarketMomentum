@@ -9,6 +9,7 @@ out.
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -19,7 +20,6 @@ from mktmtm.serving.scoring import (
     gate_3_report,
     running_record,
 )
-
 
 #: Distinguishes "caller did not say" from "caller said None", which is the
 #: difference between a default commit date and an uncommitted record.
@@ -199,3 +199,69 @@ def test_an_empty_directory_reports_no_records() -> None:
 
 def test_six_months_is_a_floor_not_a_target() -> None:
     assert GATE_3_MIN_MONTHS == 6
+
+
+# ═══════════════ committed_at: Gate 3's provenance check ═══════════════════
+#
+# This had never worked. The pathspec was passed through as given while cwd was
+# set to the file's own parent, so a repo-root-relative path resolved *under*
+# the screens directory and matched nothing. Every record came back None, so
+# every record was excluded as "not committed before its outcome" and Gate 3
+# could not be passed. These tests exercise a real git repo so the next
+# regression is caught rather than reasoned about.
+
+
+def _repo(tmp_path, relative_subdir: str = "docs/trading/results/screens"):
+    import subprocess
+
+    def git(*args, cwd=tmp_path):
+        subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "t@example.com")
+    git("config", "user.name", "T")
+    d = tmp_path / relative_subdir
+    d.mkdir(parents=True)
+    record = d / "screen-2026-10-01.md"
+    record.write_text("# Screen\n")
+    git("add", "-A")
+    git("commit", "-q", "-m", "screen")
+    return record
+
+
+def test_committed_at_resolves_a_repo_root_relative_path(tmp_path, monkeypatch) -> None:
+    from mktmtm.serving.scoring import committed_at
+
+    _repo(tmp_path)
+    # The shape that used to fail: cwd at the repo root, path relative to it.
+    monkeypatch.chdir(tmp_path)
+    rel = Path("docs/trading/results/screens/screen-2026-10-01.md")
+
+    assert committed_at(rel) is not None
+
+
+def test_committed_at_resolves_an_absolute_path(tmp_path) -> None:
+    from mktmtm.serving.scoring import committed_at
+
+    record = _repo(tmp_path)
+
+    assert committed_at(record) is not None
+
+
+def test_committed_at_returns_none_for_an_uncommitted_file(tmp_path) -> None:
+    from mktmtm.serving.scoring import committed_at
+
+    record = _repo(tmp_path)
+    loose = record.parent / "screen-2026-11-02.md"
+    loose.write_text("# Screen\n")
+
+    assert committed_at(loose) is None
+
+
+def test_committed_at_returns_none_outside_a_repo(tmp_path) -> None:
+    from mktmtm.serving.scoring import committed_at
+
+    loose = tmp_path / "screen-2026-10-01.md"
+    loose.write_text("# Screen\n")
+
+    assert committed_at(loose) is None
